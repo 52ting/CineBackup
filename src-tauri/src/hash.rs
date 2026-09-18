@@ -382,4 +382,38 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// 吞吐基准（默认忽略，手动跑）：
+    /// `cargo test --release -- --ignored hash_throughput --nocapture`
+    ///
+    /// 用来回答「换成 SHA-256 会不会拖慢校验」——备份工具的性能问题基本都出在这里。
+    #[test]
+    #[ignore = "性能基准，需要 --release 且手动触发"]
+    fn hash_throughput() {
+        use std::time::Instant;
+        // 256 MiB 载荷（分 1 MiB 块喂进去，避免一次性分配过大）
+        const CHUNK: usize = 1 << 20;
+        const CHUNKS: usize = 256;
+        let block: Vec<u8> = (0..CHUNK).map(|i| (i * 31 % 251) as u8).collect();
+
+        for algo in [HashAlgo::Sha256, HashAlgo::Xxh64] {
+            let mut h = Inner::new(algo);
+            let t = Instant::now();
+            for _ in 0..CHUNKS {
+                h.write(&block);
+            }
+            let d = h.finish(algo);
+            let secs = t.elapsed().as_secs_f64();
+            let mib = (CHUNK * CHUNKS) as f64 / (1024.0 * 1024.0);
+            println!(
+                "  {:<9} {:>7.0} MiB/s   ({:.2} GB/s)  摘要 {} 位十六进制：{}…",
+                algo.label(),
+                mib / secs,
+                mib / 1024.0 / secs,
+                d.hex().len(),
+                d.short(12)
+            );
+            assert_eq!(d.hex().len(), algo.hex_len());
+        }
+    }
 }

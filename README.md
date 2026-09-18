@@ -585,10 +585,15 @@ python tools\setup_bundler_tools.py nsis     # 只装 NSIS
 
 「任务选项」里可选：**SHA-256**（默认）或 **xxHash64**。
 
-| 算法 | 摘要长度 | 吞吐（现代 CPU） | 用途 |
+| 算法 | 摘要长度 | 吞吐（本机实测） | 用途 |
 |---|---|---|---|
-| **SHA-256** | 64 位十六进制 | 约 1~2 GB/s（x86 SHA-NI / ARMv8 加密扩展） | 结果可以对外核对：`shasum -a 256 文件` / Windows `certutil -hashfile 文件 SHA256` |
-| xxHash64 | 16 位十六进制 | 约 5~10 GB/s | 只作内部快速比对、不需要密码学强度时 |
+| **SHA-256** | 64 位十六进制 | **1.76 GB/s**（1800 MiB/s） | 结果可以对外核对：`shasum -a 256 文件` / Windows `certutil -hashfile 文件 SHA256` |
+| xxHash64 | 16 位十六进制 | 17.1 GB/s（17530 MiB/s） | 只作内部快速比对、不需要密码学强度时 |
+
+> 实测方法：`cargo test --release -- --ignored hash_throughput --nocapture`（Windows 10 / 本机 CPU，
+> SHA-256 走 x86 SHA-NI 硬件指令；Apple Silicon 走 ARMv8 加密扩展，量级相同）。
+> SHA-256 大约是 xxHash64 的 1/10，但 1.76 GB/s 已经快过绝大多数磁盘 ——
+> 校验阶段的瓶颈通常是「盘 + 要读源和目标两遍」，而不是哈希本身。
 
 同一次任务里 **预扫描查重、续传前缀校验、最终全量校验** 都用同一种算法 —— 
 避免出现「同一个文件在两个地方用不同算法」的解释负担；换算法只影响下一次开始的任务
