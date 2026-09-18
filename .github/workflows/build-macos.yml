@@ -17,6 +17,13 @@ on:
       - main
     tags:
       - "v*"
+    # 只改文档的提交不触发构建（私有仓库的 macOS runner 按 10 倍扣额度，省着用）。
+    # 注意：推 tag 时 GitHub 不评估 paths 过滤，所以打 tag 一定会出包。
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - ".gitattributes"
+      - "LICENSE"
 
 jobs:
   build:

@@ -332,11 +332,35 @@ src-tauri/target/universal-apple-darwin/release/bundle/
 > macOS 打包**不需要联网下载工具链**（用系统自带的 `hdiutil`），
 > 所以第 6.4 节那个 Windows 上的 `timeout: global` 坑在这里不会出现。
 
-### 5.3 没有 Mac：用 GitHub Actions 出包
+### 5.3 没有 Mac：用 GitHub Actions 出包（推荐）
 
-仓库里已放好 `.github/workflows/build-macos.yml`：推到 GitHub 后，
-在 Actions 页面点 **Run workflow**（或推一个 `v*` tag），云端 macOS runner 会打出
-通用二进制的 `.dmg` + `.app`，在本次 run 的 Artifacts 里下载即可。
+仓库：**https://github.com/52ting/CineBackup**（私有）。
+`.github/workflows/build-macos.yml` 已配好三种触发方式：
+
+| 触发 | 说明 |
+|---|---|
+| 推送到 `main` | 自动出**通用二进制**包（只改 `*.md` 等文档的提交不触发，省额度） |
+| 推 `v*` tag（如 `v0.4.0`） | 自动出通用二进制包；tag 推送不受 paths 过滤影响，一定会跑 |
+| Actions 页面 **Run workflow** | 手动触发，`universal` 勾掉则只打本机架构（省一半时间） |
+
+产物在本 run 的 **Artifacts** 区下载：`CineBackup-macOS-universal`
+→ 解开得到 `dmg/CineBackup_<版本>_universal.dmg` + `macos/CineBackup.app`。
+实测首次（无缓存）通用构建约 **9 分钟**；`swatinem/rust-cache` 命中后会明显更快。
+
+> ⚠️ **装的时候用 dmg，不要直接把 zip 里那个 `.app` 拖出来** —— GitHub 产物打包会丢掉
+> 可执行权限位，拖出来的 App 可能起不来；dmg 内部的权限是完整的。
+> ⚠️ **私有仓库的 macOS runner 按 10 倍扣免费额度**（2000 分钟/月 ≈ 22 次通用构建），
+> 所以纯文档改动不会触发构建。要出 Windows 安装包仍走第 6 节的本机打包。
+
+**在 Windows 上查构建状态 / 下载产物**（不必开浏览器，也不用建 PAT）：
+本机 Git for Windows 的 Credential Manager 已存有推送时的授权，`tools/watch_ci.py`
+用它取回令牌在内存里调 API：
+
+```bash
+python tools/watch_ci.py status         # 看最新一次运行的每一步状态与耗时
+python tools/watch_ci.py watch          # 盯到结束，成功则自动下载并解出 .dmg
+python tools/watch_ci.py logs <run_id>  # 构建失败时抓日志尾部
+```
 
 ### 5.4 装到本机
 
