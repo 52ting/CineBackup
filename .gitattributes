@@ -1,0 +1,26 @@
+# 统一换行符：仓库里一律存 LF，避免 Windows 上打出的 .sh 在 Mac 上变成 CRLF 而报错
+# （macOS 的 bash 遇到 \r 会直接 bad interpreter / command not found）
+* text=auto eol=lf
+
+# Windows 批处理用 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell 脚本必须 LF，且保留可执行位
+*.sh text eol=lf
+
+# 二进制：不做任何转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.msi binary
+*.dmg binary
+*.zip binary
+
+# 锁文件当成普通文本（方便 diff 时看清版本变化）—— 注意 eol 要显式写死，
+# 只写 `text` 的话会退回 core.autocrlf，反而把它们变成 CRLF
+Cargo.lock text eol=lf
+package-lock.json text eol=lf
