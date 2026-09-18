@@ -1,12 +1,13 @@
 /**
  * dnd.js — 从系统（资源管理器 / Finder）拖入文件或文件夹
  *
- * Tauri 会拦截 webview 的原生拖放，改由 `tauri://drag-drop` 事件把「绝对路径」交给前端，
+ * Tauri 会拦截 webview 的原生拖放，改由 `tauri://drag-*` 事件把「绝对路径」交给前端，
  * 所以这里拿到的是真实磁盘路径，可以直接喂给后端的 probe_path / addSource。
  *
  * 投放意图按鼠标位置判定（只认右栏，其余全部落到源）：
  *   - 落在右栏「目标文件夹」`area-dst` 内 → 设为目标文件夹
  *   - 落在左栏「备份源」`area-src` 或其它任何区域 → 加入备份源
+ *   - 任务运行中 → 只放行「加源」（业务层会在本轮结束后自动再跑一轮），改目标会被挡下
  */
 import { onDragDrop } from "./backend.js";
 import { esc } from "./ui.js";
@@ -21,23 +22,84 @@ let active = false; // 遮罩是否正在显示
 let hit = "source"; // 当前命中区：source | target
 let paths = []; // 本次拖拽携带的路径（over 事件不带 paths，用 enter 时缓存的）
 let canDrop = () => true;
+let isRunning = () => false;
 let unlisten = null;
 let lastEventAt = 0; // 最近一次收到拖拽事件的时间戳
 
 const $ = (id) => document.getElementById(id);
 
-/** Tauri 给的是物理像素，换算成 CSS 像素才能喂给 elementFromPoint */
-function cssPoint(pos) {
+/* ==================== 坐标换算（跨平台坑点） ==================== */
+
+const UA = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+const IS_MAC = /Mac OS X|Macintosh/i.test(UA);
+
+/**
+ * Tauri 给的拖拽 coordinate 换算成 CSS 像素 —— 两个平台的单位**不一样**：
+ *
+ *   - macOS：wry 用 `NSPoint draggingLocation()`，是 AppKit 的**逻辑点**（Retina 上就等于 CSS 像素）
+ *   - Windows：wry 用 `ScreenToClient()` 拿到的客户区坐标，是**物理像素**（高 DPI 要除以 dpr）
+ *
+ * 早先这里一律除以 `devicePixelRatio`，结果在 Retina Mac（dpr=2）上右栏 x≈950 被折半成
+ * 475、落进中栏，命中判定兜底返回 "source" —— 「拖到目标栏」于是被当成「加到源」。
+ * 现在按平台取尺度，并且换算后明显出界时再换另一个尺度兜一次。
+ */
+function scaleFactor() {
+  const forced = Number(window.__CB_DND_SCALE__);
+  if (forced > 0) return forced; // 预览工具投递的本来就是 CSS 像素
   const dpr = window.devicePixelRatio || 1;
-  return { x: (pos?.x ?? 0) / dpr, y: (pos?.y ?? 0) / dpr };
+  return IS_MAC ? 1 : dpr;
 }
 
-/** 鼠标底下是哪个投放区（遮罩是 pointer-events:none，不会挡住探测） */
-function hitTest(x, y) {
-  const el = document.elementFromPoint(x, y);
-  if (el && el.closest && el.closest(DST_SEL)) return "target";
-  return "source";
+function inView(p) {
+  const w = window.innerWidth || 0;
+  const h = window.innerHeight || 0;
+  return p.x >= 0 && p.y >= 0 && p.x <= w && p.y <= h;
 }
+
+/** 该点底下是哪个投放区；两者都不是返回 null */
+function zoneAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el || typeof el.closest !== "function") return null;
+  if (el.closest(DST_SEL)) return "target";
+  if (el.closest(SRC_SEL)) return "source";
+  return null;
+}
+
+/**
+ * 几何兜底：按到两栏的水平距离取更近的那个。
+ * 万一坐标尺度还是判错，也不至于把「投给目标」静默变成「加到源」。
+ */
+function nearestZone(x, y) {
+  const measure = (sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (y < r.top || y > r.bottom) return null; // 纵向压根不在这一栏
+    const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+    return { dx, cx: (r.left + r.right) / 2 };
+  };
+  const a = measure(SRC_SEL);
+  const b = measure(DST_SEL);
+  if (!a) return b ? "target" : "source";
+  if (!b) return "source";
+  if (a.dx !== b.dx) return a.dx < b.dx ? "source" : "target";
+  return Math.abs(x - a.cx) <= Math.abs(x - b.cx) ? "source" : "target";
+}
+
+/** 判定投放区 */
+function hitTest(pos) {
+  const dpr = window.devicePixelRatio || 1;
+  const s = scaleFactor();
+  let p = { x: (pos?.x ?? 0) / s, y: (pos?.y ?? 0) / s };
+  if (!inView(p)) {
+    const other = s === 1 ? dpr : 1;
+    const q = { x: (pos?.x ?? 0) / other, y: (pos?.y ?? 0) / other };
+    if (inView(q)) p = q;
+  }
+  return zoneAt(p.x, p.y) || nearestZone(p.x, p.y);
+}
+
+/* ==================== 遮罩 ==================== */
 
 function shortName(p) {
   const s = String(p || "").replace(/[\\/]+$/, "");
@@ -48,7 +110,8 @@ function shortName(p) {
 function paint() {
   const src = document.querySelector(SRC_SEL);
   const dst = document.querySelector(DST_SEL);
-  const blocked = !canDrop();
+  const blocked = !canDrop(hit);
+  const running = isRunning();
 
   if (src) {
     src.classList.toggle("drop-hot", !blocked && hit === "source");
@@ -62,8 +125,8 @@ function paint() {
 
   if (blocked) {
     els.icon.textContent = "⛔";
-    els.title.textContent = "任务运行中，暂不能修改源 / 目标";
-    els.sub.textContent = "等当前任务结束，或先点「取消任务」再拖入";
+    els.title.textContent = "任务运行中，暂不能更换目标文件夹";
+    els.sub.textContent = "可以拖到左栏继续加源；换目标请等任务结束或先点「取消任务」";
   } else if (hit === "target") {
     els.icon.textContent = "🎯";
     els.title.textContent = "松开 → 设为目标文件夹";
@@ -71,7 +134,9 @@ function paint() {
   } else {
     els.icon.textContent = "📥";
     els.title.textContent = "松开 → 加入备份源";
-    els.sub.textContent = "可一次拖入多个文件 / 文件夹，将按断点续传规则逐项比对";
+    els.sub.textContent = running
+      ? "当前任务跑完后会自动再跑一轮，已备份的文件会自动跳过"
+      : "可一次拖入多个文件 / 文件夹，将按断点续传规则逐项比对";
   }
 
   if (paths.length) {
@@ -113,7 +178,8 @@ function hide() {
 /**
  * 挂载拖放。
  * @param {{
- *   canDrop?: () => boolean,
+ *   canDrop?: (zone: "source"|"target") => boolean,
+ *   isRunning?: () => boolean,
  *   onDropSources?: (paths: string[]) => void,
  *   onDropTarget?: (paths: string[]) => void,
  * }} opts
@@ -129,6 +195,7 @@ export function initDragDrop(opts = {}) {
   };
   if (!els.mask) return () => {};
   if (typeof opts.canDrop === "function") canDrop = opts.canDrop;
+  if (typeof opts.isRunning === "function") isRunning = opts.isRunning;
 
   onDragDrop((payload) => {
     const t = payload?.type;
@@ -136,8 +203,7 @@ export function initDragDrop(opts = {}) {
 
     if (t === "enter" || t === "over") {
       if (Array.isArray(payload.paths) && payload.paths.length) paths = payload.paths;
-      const { x, y } = cssPoint(payload.position);
-      hit = hitTest(x, y);
+      hit = hitTest(payload.position);
       show();
       paint();
       return;
@@ -145,10 +211,11 @@ export function initDragDrop(opts = {}) {
 
     if (t === "drop") {
       const dropped = Array.isArray(payload.paths) && payload.paths.length ? payload.paths : paths;
-      const where = hit;
+      // 落点以 drop 事件自带的坐标为准（over 事件可能稀疏 / 缺失）
+      const where = payload.position ? hitTest(payload.position) : hit;
       hide();
       if (!dropped.length) return;
-      if (!canDrop()) return; // 业务层无需再判，运行中直接丢弃
+      if (!canDrop(where)) return; // 业务层无需再判
       if (where === "target") opts.onDropTarget?.(dropped);
       else opts.onDropSources?.(dropped);
       return;

@@ -23,8 +23,12 @@ const state = {
   targetFree: null,
   /** 预扫描算出的实际需写入字节（比源总量准）；0 = 还没扫过 */
   planBytes: 0,
-  /** 中栏是否被手动折叠 */
+  /** 中栏当前展示的是磁盘网格还是传输列表（运行中也能手动切回去看磁盘） */
+  midView: "disks",
+  /** 中栏磁盘网格是否被手动折叠（仅空闲态有意义） */
   midFolded: false,
+  /** 运行中往源里加了新素材 → 排一轮追加备份，本轮结束后自动开跑 */
+  pendingRun: false,
   /** 运行中每个源的进度行（来自后端 progress 事件） */
   runRows: [],
   /** @type {Array} 后端自动拉取到的磁盘 / 卷 */
@@ -247,7 +251,7 @@ function bindDiskGrid() {
     const card = ev.target.closest(".disk-card");
     if (!card) return;
     if (state.running) {
-      ui.pushLog("warn", "任务运行中，暂不能修改源 / 目标。");
+      ui.pushLog("warn", "任务运行中，磁盘面板暂时只读。加源仍可用：直接拖入左栏，或用左栏的「＋」。");
       return;
     }
     openDiskMenu(card);
@@ -286,7 +290,6 @@ async function addSourcePaths(paths) {
 }
 
 async function addSourcesFromDialog(mode, defaultPath) {
-  if (state.running) return;
   let picked;
   try {
     picked = await open({
@@ -304,12 +307,19 @@ async function addSourcesFromDialog(mode, defaultPath) {
   }
   if (!picked) return;
   const list = Array.isArray(picked) ? picked : [picked];
+  const wasRunning = state.running;
   const added = await addSourcePaths(list);
-  if (added) ui.pushLog("ok", `本次新增 ${added} 个源，共 ${state.sources.length} 个。`);
+  if (added) {
+    ui.pushLog("ok", `本次新增 ${added} 个源，共 ${state.sources.length} 个。`);
+    if (wasRunning) queueRun("运行中加入了新素材");
+  }
 }
 
 function clearSources() {
-  if (state.running) return;
+  if (state.running) {
+    ui.pushLog("warn", "任务运行中不能清空源列表（正在跑的这轮会失控）。等结束后再清。");
+    return;
+  }
   state.sources = [];
   ui.renderSources(state.sources);
   paintDisks();
@@ -318,7 +328,11 @@ function clearSources() {
 
 $("srcList").addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-del]");
-  if (!btn || state.running) return;
+  if (!btn) return;
+  if (state.running) {
+    ui.pushLog("warn", "任务运行中不能移除源；等这轮结束后再改，或先点「取消任务」。");
+    return;
+  }
   const i = Number(btn.dataset.del);
   const removed = state.sources.splice(i, 1)[0];
   ui.renderSources(state.sources);
@@ -386,25 +400,30 @@ function dirName(p) {
   return head || "/";
 }
 
-/** 拖到「备份源」区域 → 全部作为源加入 */
+/**
+ * 拖到「备份源」区域 → 全部作为源加入。
+ * 任务运行中**也允许**：源列表加完就排一轮追加备份（见 queueRun）。
+ */
 async function dropToSources(paths) {
-  if (state.running) {
-    ui.pushLog("warn", "任务运行中，暂不能修改源 / 目标。");
-    return;
-  }
+  const wasRunning = state.running;
   ui.pushLog("info", `拖入 ${paths.length} 项，按备份源处理。`);
   const added = await addSourcePaths(paths);
-  if (added) ui.pushLog("ok", `拖拽新增 ${added} 个源，共 ${state.sources.length} 个。`);
-  else ui.pushLog("warn", "拖入的路径没有新增任何源（可能已存在或路径无效）。");
+  if (added) {
+    ui.pushLog("ok", `拖拽新增 ${added} 个源，共 ${state.sources.length} 个。`);
+    if (wasRunning) queueRun("拖入了新素材");
+  } else {
+    ui.pushLog("warn", "拖入的路径没有新增任何源（可能已存在或路径无效）。");
+  }
 }
 
 /**
  * 拖到「目标文件夹」区域 → 推断该用哪个文件夹当目标。
  * 规则：优先取第一个存在的文件夹；若拖的全是文件，则取第一个文件所在目录。
+ * 任务运行中改目标会把「已在写入的位置」换掉，所以直接拒绝。
  */
 async function dropToTarget(paths) {
   if (state.running) {
-    ui.pushLog("warn", "任务运行中，暂不能修改源 / 目标。");
+    ui.pushLog("warn", "任务运行中不能更换目标文件夹；等这轮结束或先点「取消任务」。");
     return;
   }
   const infos = [];
@@ -505,7 +524,49 @@ function paintTransfers(p) {
     };
   });
   ui.renderTransfers(rows);
-  ui.renderMidMode("transfers", { sub: `${rows.length} 个源` });
+  paintMid();
+}
+
+/* ==================== 中栏视图：磁盘 ⇄ 传输 ==================== */
+
+/** 按 state 重画中栏（模式 / 副标题 / 总进度条显隐） */
+function paintMid() {
+  const n = state.runRows.length;
+  const isTr = state.midView === "transfers";
+  ui.renderMidMode(state.midView, {
+    sub: isTr ? `${n} 个源` : n ? `${n} 个源传输中` : "",
+    showTotal: isTr || n > 0 || state.running,
+  });
+  syncFoldButton();
+}
+
+/** 折叠按钮的图标 / tooltip 随「当前看的是哪一面」变化 */
+function syncFoldButton() {
+  if (state.midView === "transfers") {
+    ui.setFoldHint({ icon: "⌄", title: "折叠传输列表，改看本机磁盘", on: true });
+  } else if (state.runRows.length || state.running) {
+    ui.setFoldHint({ icon: "⌃", title: "回到传输列表看每源进度", on: true });
+  } else {
+    ui.setFoldHint({
+      icon: state.midFolded ? "⌃" : "⌄",
+      title: state.midFolded ? "展开本机磁盘" : "收起本机磁盘",
+      on: false,
+    });
+  }
+}
+
+/**
+ * 切换中栏展示。
+ * 运行中也能切回磁盘视图（看剩余空间 / 插了哪块盘），任务照跑不误。
+ * @param {"disks"|"transfers"} view
+ */
+function setMidView(view) {
+  state.midView = view;
+  if (view === "transfers" && state.midFolded) {
+    state.midFolded = false;
+    ui.setMidFolded(false);
+  }
+  paintMid();
 }
 
 /** 进入传输视图，先用已选源铺出占位行（预扫描阶段后端还没算出按源数据） */
@@ -520,14 +581,44 @@ function enterTransfers() {
     filesTotal: 0,
     filesDone: 0,
   }));
+  state.midView = "transfers";
+  state.midFolded = false;
+  ui.setMidFolded(false);
   paintTransfers({ speedBps: 0 });
 }
 
-/** 回到磁盘视图 */
-function exitTransfers() {
-  state.runRows = [];
-  ui.clearTransfers();
-  ui.renderMidMode("disks");
+/* ==================== 追加一轮（运行中加源） ==================== */
+
+/**
+ * 排一轮追加备份。
+ * 同一时间后端只允许一个任务（`AppState.busy`），所以运行中不硬闯，
+ * 而是记一个标记：本轮 JOB_END 之后自动再跑一轮。
+ * 备份本身是幂等的（已备份的文件按断点续传规则跳过），重跑一轮代价很小。
+ */
+function queueRun(reason = "") {
+  if (!state.running) {
+    run(false);
+    return;
+  }
+  if (state.pendingRun) return;
+  state.pendingRun = true;
+  ui.pushLog(
+    "info",
+    `${reason ? reason + "：" : ""}已排队，本轮任务结束后自动再跑一轮（已备份的文件会自动跳过）。不想跑就点「取消排队」。`
+  );
+  ui.renderStartButton({ running: true, queued: true });
+}
+
+function cancelPendingRun() {
+  if (!state.pendingRun) return;
+  state.pendingRun = false;
+  ui.pushLog("info", "已取消排队的追加备份。");
+  ui.renderStartButton({ running: state.running, queued: false });
+}
+
+function togglePendingRun() {
+  if (state.pendingRun) cancelPendingRun();
+  else queueRun("手动追加");
 }
 
 /* ==================== 选项 / 组装请求 ==================== */
@@ -569,9 +660,8 @@ async function run(dryRun) {
   ui.resetResults();
   ui.renderStatus("scanning");
   // 中栏由「磁盘」切到「传输」：收起磁盘网格，改看每个源自己的进度条
-  state.midFolded = false;
-  ui.setMidFolded(false);
   enterTransfers();
+  ui.renderStartButton({ running: true, queued: state.pendingRun });
   paintDisks(); // 磁盘卡转入「运行中」状态，不再接受点击
   ui.pushLog("info", dryRun ? "===== 开始试运行 Dry Run（不写入任何数据）=====" : "===== 开始备份任务 =====");
   try {
@@ -746,6 +836,21 @@ function subscribe() {
     if (p.message) ui.pushLog(p.ok ? "info" : "error", p.message);
     // 盘上数据变了 → 刷新剩余空间，并让磁盘卡脱离「运行中」状态
     loadDisks("auto").then(() => paintDisks());
+
+    // 运行中加过源 → 自动再跑一轮（用户主动取消的那一轮不追）
+    if (state.pendingRun) {
+      if (p.aborted) {
+        state.pendingRun = false;
+        ui.pushLog("warn", "任务被中止 → 已取消排队的追加备份。");
+      } else {
+        state.pendingRun = false;
+        ui.pushLog("info", "排队的追加备份开始（源列表已更新，已备份的文件会自动跳过）…");
+        setTimeout(() => {
+          if (!state.running) run(false);
+        }, 500);
+      }
+    }
+    ui.renderStartButton({ running: state.running, queued: state.pendingRun });
   });
 }
 
@@ -765,7 +870,14 @@ document.addEventListener("click", () => $("addSourceMenu").classList.add("hidde
 $("btnClearSources").addEventListener("click", clearSources);
 $("btnPickTarget").addEventListener("click", () => pickTarget());
 $("btnRefreshDisks").addEventListener("click", () => loadDisks("manual"));
-$("btnStart").addEventListener("click", () => run(false));
+// 运行中点「开始备份」= 追加一轮（排队到本轮结束后），不打断正在跑的这轮
+$("btnStart").addEventListener("click", () => {
+  if (state.running) {
+    togglePendingRun();
+    return;
+  }
+  run(false);
+});
 $("btnDry").addEventListener("click", () => run(true));
 $("btnCancel").addEventListener("click", cancel);
 $("btnSaveTask").addEventListener("click", saveTask);
@@ -781,22 +893,32 @@ document.addEventListener("click", (ev) => {
   if (!ev.target.closest("#optWrap")) $("optMenu").classList.add("hidden");
 });
 
-// 中栏折叠按钮：任务刚结束时按 = 回到磁盘视图；其余情况 = 收起 / 展开中栏内容
+// 中栏右上角箭头：
+//   传输视图 → 折叠传输列表、切回磁盘网格
+//   磁盘视图（还有传输行 / 任务在跑）→ 回到传输列表
+//   空闲且没有传输行 → 收起 / 展开磁盘网格本身
 $("btnFoldMid").addEventListener("click", () => {
-  if (!state.running && state.runRows.length) {
-    exitTransfers();
-    loadDisks("auto");
+  if (state.midView === "transfers") {
+    setMidView("disks");
+    if (!state.running) loadDisks("auto");
+    return;
+  }
+  if (state.runRows.length || state.running) {
+    setMidView("transfers");
     return;
   }
   state.midFolded = !state.midFolded;
   ui.setMidFolded(state.midFolded);
+  syncFoldButton();
 });
 
 bindDiskGrid();
 
-// 系统级拖放：拖到左边加入源、拖到右边设为目标，其它区域默认按「加入源」处理
+// 系统级拖放：拖到左边加入源、拖到右边设为目标，其它区域默认按「加入源」处理。
+// 任务运行中只放行「加源」（加完自动排队再跑一轮），改目标会被拦下。
 initDragDrop({
-  canDrop: () => !state.running,
+  canDrop: (zone) => zone !== "target" || !state.running,
+  isRunning: () => state.running,
   onDropSources: dropToSources,
   onDropTarget: dropToTarget,
   onStatus: (ok) => {
@@ -806,20 +928,19 @@ initDragDrop({
   },
 });
 
-// 运行中锁定编辑类操作
-const lockables = ["btnAddSource", "btnClearSources", "btnPickTarget", "btnSaveTask", "btnLoadTask"];
+// 运行中锁定编辑类操作（加源不锁：运行中加源是支持的，加完会自动排队跑下一轮）
+const lockables = ["btnPickTarget", "btnSaveTask", "btnLoadTask"];
 function refreshLock() {
   const lock = state.running;
   ui.renderStatus($("statusPill").dataset.s || "idle");
   lockables.forEach((id) => {
     const el = $(id);
-    if (!el) return;
-    if (id === "btnAddSource" || id === "btnClearSources") {
-      el.disabled = lock || (id === "btnClearSources" && state.sources.length === 0);
-    } else {
-      el.disabled = lock;
-    }
+    if (el) el.disabled = lock;
   });
+  // 清空源、逐项删除在运行中仍然禁用（会让正在跑的这轮失控）
+  const cls = $("btnClearSources");
+  if (cls) cls.disabled = lock || state.sources.length === 0;
+  ui.renderStartButton({ running: lock, queued: state.pendingRun });
   // 磁盘卡：运行中标记 busy（点了只给提示，不弹操作菜单）
   document.querySelectorAll(".disk-card").forEach((c) => c.classList.toggle("is-busy", lock));
 }
@@ -830,8 +951,8 @@ ui.resetProgress();
 ui.resetResults();
 ui.renderSources(state.sources);
 ui.renderTarget(null, null);
-ui.renderMidMode("disks");
 ui.setMidFolded(false);
+paintMid();
 refreshLock();
 loadDisks("init");
 

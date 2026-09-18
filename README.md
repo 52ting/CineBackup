@@ -66,7 +66,7 @@ cinebackup/
 ┌───────────────────────────────────────────────────────────────┐
 │ CineBackup   [容量胶囊：源 12.4 GB ▸ 需写入 8.1 GB]   [状态]   │
 ├──────────────┬───────────────────────────────┬────────────────┤
-│ 备份源 [n]   │ 本机磁盘   ↻ 刷新   ⌃ 折叠     │ 目标文件夹     │
+│ 备份源 [n]   │ 磁盘 / 传输    ↻ 刷新  ⌄ 切换  │ 目标文件夹     │
 │ ┄┄虚线投放┄┄  │  ┌─────────┐  ┌─────────┐     │ ┄┄虚线投放┄┄   │
 │ ▸ 源卡片     │  │ ▤ C: 系统│  │ ▤ D: 素材│ ... │ ▸ 目标卡片     │
 │ ▸ 源卡片     │  └─────────┘  └─────────┘     │  路径 / 文件系统│
@@ -84,16 +84,22 @@ cinebackup/
 |---|---|---|
 | 左 · 备份源 | 已加入的源卡片（路径 + 文件系统 + 大小） | 虚线区可拖入；卡片上可移除 |
 | 中 · 本机磁盘 | **单份**磁盘网格（不再左右各拉一遍） | 点磁盘弹菜单：**整盘加入 / 挑选文件夹 / 设为目标** |
-| 中 · 转发列表 | 任务开始后自动切换为「一源一行」的进度列表 | 每行独立进度条 + 当前文件名 + 速度 / 剩余 |
+| 中 · 传输列表 | 任务开始后自动切换为「一源一行」的进度列表 | 每行独立进度条 + 当前文件名 + 速度 / 剩余 |
 | 右 · 目标文件夹 | 目标路径、文件系统、剩余空间（只读盘给警示） | 虚线区可拖入；点磁盘卡换目标 |
 
-- **中栏是双态的**：空闲显示磁盘网格（`data-mode="disks"`），开始备份即切到转发列表
-  （`data-mode="transfers"`）；点中栏右上角的 **⌃** 可手动折叠磁盘区、只看进度。
+- **中栏是双态的**：空闲显示磁盘网格，开始备份即切到传输列表；点中栏右上角的 **⌄**
+  可以随时在两者之间来回切（**任务运行中也能切回磁盘看剩余空间**，总进度条会一直留在下面）。
+  箭头当前处于「可切换」状态时会高亮；空闲且没有传输行时，它退化成「收起 / 展开磁盘网格」。
 - **每源一行进度来自后端**：扫描阶段给每个 `PlanItem` 打上 `src_idx`（它属于第几个源），
   拷贝阶段维护一份 `SourceProgress` 累加器，随 `ProgressReport.sources` 一起下发。
   `state = waiting / active / done / failed` 都是真实状态，不是前端猜的。
   拷贝是串行的，所以同一时刻只有一行 `active`，它前面的行都是 `done`。
 - 校验阶段 `sources` 是空数组，前端**保留拷贝阶段的行**、只换相位文案，不会闪回空列表。
+- **运行中还能继续加源 → 自动追加一轮**：任务跑着的时候把新素材拖进左栏（或用左栏的「＋」），
+  源列表立刻更新，并自动排一轮追加备份 —— 本轮 `JOB_END` 之后自动再跑一次
+  （「开始备份」按钮此时显示为琥珀色 **取消排队 ⌛**，点一下即可撤销）。
+  之所以排队而不是并行：后端 `AppState.busy` 同时只允许一个任务；而备份本身是幂等的
+  （已备份的文件按断点续传规则跳过），重跑一轮代价很小。用户主动「取消任务」的那一轮不追加。
 - **双主题**：`:root` 为浅色变量，`@media (prefers-color-scheme: dark)` 与
   `:root[data-theme="dark"]` 覆盖为深色。磁盘图标是纯 CSS 画的扁平轮廓
   （`--ico-face` / `--ico-base`），深浅两套分别校准过对比度，没有用滤镜。
@@ -140,20 +146,31 @@ Tauri 会接管 webview 的原生拖放，通过 `tauri://drag-*` 事件把**绝
 | 左侧「备份源」栏 | 拖入的每一项都加入源列表（文件 / 文件夹混着拖也行，自动去重） |
 | 右侧「目标文件夹」栏 | 第一个文件夹直接设为目标；只拖了文件则取其所在文件夹设为目标 |
 | 其它区域 | 默认按「加入备份源」处理 |
+| 任务运行中 · 左栏 / 其它区域 | **照常加源**，并自动排一轮追加备份（见上） |
+| 任务运行中 · 右栏 | 拒绝（遮罩转橙色警示），避免把正在写入的位置换掉 |
 
 实现要点：
 
-- 投放意图由**鼠标位置**判定：事件带的 `position` 是物理像素，先除以 `devicePixelRatio` 换算成 CSS 像素，
-  再用 `elementFromPoint` 找所在卡片（遮罩层设了 `pointer-events: none`，不会挡住命中测试）
+- 投放意图由**鼠标位置**判定，用 `elementFromPoint` 找所在卡片
+  （遮罩层设了 `pointer-events: none`，不会挡住命中测试）。
+- ⚠️ **坐标单位两个平台不一样**，这是踩过的坑：wry 在 macOS 用
+  `NSPoint draggingLocation()`（AppKit **逻辑点**），在 Windows 用
+  `ScreenToClient()`（客户区**物理像素**）。早先一律除以 `devicePixelRatio`，
+  于是在 Retina Mac（dpr=2）上右栏 x≈950 被折半成 475、落进中栏，
+  命中判定兜底返回 `source` —— **「拖到目标栏」被当成「加到源」**。
+  现在按平台取尺度（macOS 用 1、其余除以 dpr），换算后明显出界时再换另一个尺度兜一次，
+  最后还有一层「离哪一栏更近」的几何兜底。预览工具通过 `window.__CB_DND_SCALE__ = 1`
+  固定尺度（它投递的本来就是 CSS 像素）。
 - 拖拽期间底部弹出提示卡，显示本次要放什么（最多列 3 条路径 + 「另外 N 项」），
-  并高亮命中的卡片、把另一侧压暗
-- `over` 事件不带 `paths`，所以用 `enter` 带着的路径缓存起来给提示卡用
-- **任务运行中禁止投放**（遮罩转为橙色警示文案），避免途中改源 / 目标
-- 看门狗：超过 2.5 秒没有新事件就自动收起遮罩，兜住个别平台漏发 `leave` 的情况
-- 订阅失败（非 Tauri 环境）时静默降级成 `console.warn`，并在启动日志里提示「拖放功能未启用」
+  并高亮命中的卡片、把另一侧压暗；运行中拖到左栏时提示卡会说明「跑完自动再跑一轮」。
+- `over` 事件不带 `paths`，所以用 `enter` 带着的路径缓存起来给提示卡用；
+  最终落点以 `drop` 事件**自带**的坐标为准（`over` 可能稀疏 / 缺失）。
+- 看门狗：超过 2.5 秒没有新事件就自动收起遮罩，兜住个别平台漏发 `leave` 的情况。
+- 订阅失败（非 Tauri 环境）时静默降级成 `console.warn`，并在启动日志里提示「拖放功能未启用」。
 
 > 想在不编译 Rust 的情况下核对拖拽界面：
-> `python tools/preview_ui.py --shot --dnd --dnd-x 950 --dnd-y 300`（x≈320 是左栏，≈950 是中栏右缘 / 右栏）。
+> `python tools/preview_ui.py --shot --dnd --dnd-x 300 --dnd-y 300`（左栏）/
+> `--dnd-x 1150 --dnd-y 300`（右栏）；加 `--drop` 会真的松手投递一次，用来验证落点判定。
 
 ### 已验证状态（Windows 10 22H2 / rustc 1.98.1）
 
@@ -226,7 +243,7 @@ npm run tauri dev          # 启动开发模式（改前端热更新，改 Rust 
 
 ```bash
 npm run build                              # 只构建前端，约 1 秒
-python tools/preview_ui.py --shot          # 生成 tools/ui-preview.png（浅色 · 空闲）
+python tools/preview_ui.py --shot          # 生成 tools/ui-preview-light.png（浅色 · 空闲）
 python tools/preview_ui.py --serve         # 或者起 http://127.0.0.1:8765 自己开浏览器点
 ```
 
@@ -235,13 +252,18 @@ python tools/preview_ui.py --serve         # 或者起 http://127.0.0.1:8765 自
 | 开关 | 作用 |
 |---|---|
 | `--theme dark` / `--theme light` | 强行走 `?theme=` 对应的配色（默认跟随系统） |
-| `--run` | 模拟点「开始备份」：发状态 / 计划 / 进度事件，中栏切成转发列表 |
-| `--dnd --dnd-x N --dnd-y N` | 模拟拖拽悬停，核对高亮框与命中判定 |
+| `--run` | 模拟点「开始备份」：发状态 / 计划 / 进度事件，中栏切成传输列表 |
+| `--run --fold` | 接着再点一次中栏箭头，截「运行中切回磁盘视图」的样子 |
+| `--dnd --dnd-x N --dnd-y N` | 模拟拖拽悬停，核对高亮框与命中判定（左栏 ≈300、右栏 ≈1150） |
+| `--dnd --drop` | 悬停 0.9 秒后真的松手投递一次，用来验证「落点到底判给了哪一侧」 |
 | `--width` / `--height` | 窗口尺寸（默认 1280×880） |
 
 ```bash
-python tools/preview_ui.py --shot --theme dark --run     # tools/ui-preview-run-dark.png
-python tools/preview_ui.py --shot --theme light          # tools/ui-preview-light.png
+python tools/preview_ui.py --shot --theme dark --run       # tools/ui-preview-run-dark.png
+python tools/preview_ui.py --shot --theme light            # tools/ui-preview-light.png
+python tools/preview_ui.py --shot --run --fold             # tools/ui-preview-run-fold-light.png
+python tools/preview_ui.py --shot --dnd --drop --dnd-x 1150  # 右栏松手 → 应设为目标
+python tools/preview_ui.py --shot --run --dnd --drop --dnd-x 300  # 运行中拖入左栏 → 应自动排队
 ```
 
 假后端会返回 5 块盘（含 1 块映射网络盘、1 块剩余为 0 的掉线盘），并自动演一遍
@@ -323,7 +345,7 @@ npm run tauri build -- --bundles app                       # 只要 .app，不�
 ```
 src-tauri/target/release/bundle/
 ├── macos/CineBackup.app
-└── dmg/CineBackup_0.4.0_x64.dmg
+└── dmg/CineBackup_0.4.1_x64.dmg
 
 # 通用二进制会落在另一个 target 目录：
 src-tauri/target/universal-apple-darwin/release/bundle/
@@ -468,8 +490,8 @@ npm run tauri build -- --bundles nsis
 src-tauri\target\release\
 ├── cinebackup.exe                              8.07 MB   免安装，可直接双击
 └── bundle\
-    ├── msi\CineBackup_0.4.0_x64_en-US.msi      2.8x MB   MSI 安装包
-    └── nsis\CineBackup_0.4.0_x64-setup.exe     1.8x MB   NSIS 安装包
+    ├── msi\CineBackup_0.4.1_x64_en-US.msi      2.8x MB   MSI 安装包
+    └── nsis\CineBackup_0.4.1_x64-setup.exe     1.8x MB   NSIS 安装包
 ```
 
 > 改动前端界面后**务必先把版本号 +1**（`package.json`、`src-tauri/Cargo.toml`、

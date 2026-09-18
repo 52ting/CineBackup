@@ -13,12 +13,16 @@
     python tools/preview_ui.py --shot --theme dark              # 强制深色
     python tools/preview_ui.py --shot --theme light             # 强制浅色
     python tools/preview_ui.py --shot --run --theme dark        # 任务运行中（传输列表）
+    python tools/preview_ui.py --shot --run --fold              # 运行中点箭头 → 切回磁盘视图
     python tools/preview_ui.py --shot --dnd --dnd-x 1150 --dnd-y 300   # 拖拽悬停态
+    python tools/preview_ui.py --shot --dnd --drop --dnd-x 1150        # 真松手：右栏应设为目标
+    python tools/preview_ui.py --shot --run --dnd --drop --dnd-x 300   # 运行中拖入左栏 → 自动排队
 
 预览页 URL 参数（浏览器里也能手动看效果）：
     ?theme=dark|light   强制主题
     ?run=1              任务运行中态（中栏换成每个源一条的传输进度）
-    ?dnd=1&x=&y=        拖拽悬停态
+    ?run=1&fold=1       运行中把中栏切回磁盘视图
+    ?dnd=1&x=&y=        拖拽悬停态；再加 &drop=1 会真的松手投递一次
 """
 
 import argparse
@@ -55,6 +59,8 @@ MOCK_DISKS = [
 
 MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产物） ====
 (function () {
+  // 预览页的拖拽坐标本来就按 CSS 像素投递，明确告诉 dnd.js 别再除 dpr
+  window.__CB_DND_SCALE__ = 1;
   const DISKS = __DISKS__;
 
   // 每次打开"选择对话框"依次返回这些路径
@@ -171,12 +177,17 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
   }
 
   // ?dnd=1&x=960&y=300 → 自动进入拖拽悬停态，好截拖拽遮罩
+  // 再加 &drop=1 → 2.4s 后真的「松手」，验证落点判定（右栏应设为目标、左栏应加源）
   if (qs.has("dnd")) {
     const x = Number(qs.get("x") || 320);
     const y = Number(qs.get("y") || 300);
     setTimeout(() => window.__cbDnd("enter", DROP_PATHS, x, y), 1500);
-    // 真机上鼠标移动会持续派发 over，这里也持续发，否则会被遮罩的看门狗收掉
-    setInterval(() => window.__cbDnd("over", DROP_PATHS, x, y), 250);
+    if (qs.has("drop")) {
+      setTimeout(() => window.__cbDnd("drop", DROP_PATHS, x, y), 2400);
+    } else {
+      // 真机上鼠标移动会持续派发 over，这里也持续发，否则会被遮罩的看门狗收掉
+      setInterval(() => window.__cbDnd("over", DROP_PATHS, x, y), 250);
+    }
   }
 
 
@@ -202,6 +213,11 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     if (qs.has("run")) {
       await sleep(220);
       document.getElementById("btnStart")?.click();
+      // ?fold=1 → 运行中再点中栏箭头，应折回磁盘视图（验证箭头能来回切）
+      if (qs.has("fold")) {
+        await sleep(1200);
+        document.getElementById("btnFoldMid")?.click();
+      }
     }
   });
 })();
@@ -324,6 +340,16 @@ def main():
     ap.add_argument("--dnd-x", type=int, default=320, help="拖拽悬停点 x（左栏约 300，右栏约 1150）")
     ap.add_argument("--dnd-y", type=int, default=300)
     ap.add_argument(
+        "--drop",
+        action="store_true",
+        help="配合 --dnd：2.4s 后真的松手投递一次，验证落点判定（右栏→设目标 / 左栏→加源）",
+    )
+    ap.add_argument(
+        "--fold",
+        action="store_true",
+        help="配合 --run：运行中点一次中栏箭头，截「传输 ⇄ 磁盘」切换后的样子",
+    )
+    ap.add_argument(
         "--theme",
         default="",
         choices=["", "dark", "light"],
@@ -342,8 +368,12 @@ def main():
         name = "ui-preview"
         if args.dnd:
             name += "-dnd"
+        if args.drop:
+            name += "-drop"
         if args.run:
             name += "-run"
+        if args.fold:
+            name += "-fold"
         if args.theme:
             name += "-" + args.theme
         out = os.path.join(ROOT, "tools", name + ".png")
@@ -351,10 +381,14 @@ def main():
     parts = []
     if args.dnd:
         parts.append(f"dnd=1&x={args.dnd_x}&y={args.dnd_y}")
+        if args.drop:
+            parts.append("drop=1")
     if args.theme:
         parts.append("theme=" + args.theme)
     if args.run:
         parts.append("run=1")
+        if args.fold:
+            parts.append("fold=1")
     query = "?" + "&".join(parts) if parts else ""
 
     build()

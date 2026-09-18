@@ -203,6 +203,9 @@ body {
 .icon-btn:disabled { opacity: .35; cursor: not-allowed; }
 .icon-btn.accent { background: var(--primary); color: #fff; }
 .icon-btn.accent:hover:not(:disabled) { background: var(--primary-dark); color: #fff; }
+/* 中栏箭头：当前处在「双态可切」状态时给点提示色 */
+.icon-btn.on { border-color: var(--border-strong); color: var(--primary); }
+.icon-btn.on:hover:not(:disabled) { background: var(--primary-soft); color: var(--primary-dark); }
 
 /* ============================================================ 投放区（左 / 右栏） */
 .dropzone {
@@ -441,6 +444,11 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 .btn:disabled { opacity: .42; cursor: not-allowed; }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
 .btn.primary:hover:not(:disabled) { background: var(--primary-dark); border-color: var(--primary-dark); }
+/* 已排队「追加一轮」：换成琥珀色，一眼看出「等当前任务跑完再上」 */
+.btn.primary.queued,
+.btn.primary.queued:hover:not(:disabled) {
+  background: var(--warn); border-color: var(--warn); color: #fff;
+}
 .btn.ghost { background: transparent; color: var(--text-dim); border-color: transparent; }
 .btn.ghost:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .btn.warn { background: rgba(217, 140, 0, .12); border-color: rgba(217, 140, 0, .45); color: var(--warn); }

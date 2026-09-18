@@ -200,15 +200,31 @@ export function renderStatus(status) {
   $("statusPill").dataset.s = status;
   $("statusText").textContent = STATUS_LABEL[status] || status;
   const running = status !== "idle" && status !== "done";
-  $("btnStart").disabled = running;
+  // 「开始备份」运行中不禁用：点它是「追加一轮」（排队到本轮结束后），由 main.js 接管
   $("btnDry").disabled = running;
   $("btnCancel").classList.toggle("hidden", !running);
+}
+
+/**
+ * 「开始备份」按钮的文案随状态变化：
+ *   空闲 → 开始备份 ｜ 运行中 → 追加一轮 ｜ 已排队 → 取消排队
+ */
+export function renderStartButton({ running, queued }) {
+  const b = $("btnStart");
+  if (!b) return;
+  b.textContent = !running ? "开始备份" : queued ? "取消排队 ⌛" : "追加一轮";
+  b.title = !running
+    ? "按当前源与目标开始备份"
+    : queued
+    ? "已排队：本轮任务结束后自动再跑一轮（已备份的文件会跳过）；点击取消排队"
+    : "不改动正在跑的任务，等它结束后自动再跑一轮（已备份的文件会自动跳过）";
+  b.classList.toggle("queued", !!queued);
 }
 
 /* ==================== 中栏：磁盘 ↔ 传输 双态切换 ==================== */
 /**
  * @param {"disks"|"transfers"} mode
- * @param {{busy?:boolean, sub?:string}} ctx
+ * @param {{sub?:string, showTotal?:boolean}} ctx
  */
 export function renderMidMode(mode, ctx = {}) {
   const grid = $("diskGrid");
@@ -222,13 +238,29 @@ export function renderMidMode(mode, ctx = {}) {
   title.textContent = showTransfers ? "传输" : "磁盘";
   if (sub) sub.textContent = ctx.sub || "";
   $("btnRefreshDisks").classList.toggle("hidden", showTransfers);
-  $("totalBar").classList.toggle("hidden", !showTransfers);
+  // 总进度条：只要还有任务在跑 / 还有传输行，即使切到磁盘视图也留在下面
+  const showTotal = ctx.showTotal === undefined ? showTransfers : !!ctx.showTotal;
+  $("totalBar").classList.toggle("hidden", !showTotal);
 }
 
-/** 手动折叠：磁盘网格收起（但保留传输列表 / 进度条可见） */
+/**
+ * 折叠按钮（中栏右上角箭头）的外观：文案 + tooltip + 高亮态
+ * @param {{icon?:string, title?:string, on?:boolean}} hint
+ */
+export function setFoldHint(hint = {}) {
+  const b = $("btnFoldMid");
+  if (!b) return;
+  if (hint.icon) b.textContent = hint.icon;
+  if (hint.title) b.title = hint.title;
+  b.classList.toggle("on", !!hint.on);
+}
+
+/** 手动折叠：中栏内容（磁盘网格）收起；按钮外观统一由 setFoldHint 管 */
 export function setMidFolded(folded) {
-  $("midBody").classList.toggle("hidden", folded);
-  $("btnFoldMid").textContent = folded ? "⌃" : "⌄";
+  const body = $("midBody");
+  if (body) body.classList.toggle("hidden", folded);
+  const b = $("btnFoldMid");
+  if (b) b.classList.toggle("folded", folded);
 }
 
 /* ==================== 中栏：传输列表 ==================== */
