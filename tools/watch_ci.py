@@ -86,26 +86,43 @@ def _req(url, tok, accept="application/vnd.github+json"):
     return urllib.request.Request(url, headers=h)
 
 
-def api(path):
-    try:
-        with urllib.request.urlopen(_req(API + path, TOK), timeout=90) as r:
-            return json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        return {"__status__": e.code, "__body__": e.read().decode()[:500]}
+def api(path, tries=4):
+    """调 GitHub API，带重试。
+
+    本机到 api.github.com 会偶发 `SSL: UNEXPECTED_EOF_WHILE_READING` / DNS 解析失败
+    （代理或沙箱抖动），失败一次不代表网络不通 —— 重试即可，别急着排查配置。
+    """
+    last = None
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(_req(API + path, TOK), timeout=90) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            return {"__status__": e.code, "__body__": e.read().decode()[:500]}
+        except Exception as e:  # URLError / ssl.SSLError / timeout …
+            last = e
+            if i < tries - 1:
+                time.sleep(2 + 2 * i)
+    sys.exit("访问 api.github.com 失败（已重试 %d 次）：%r" % (tries, last))
 
 
 def fetch_first_hop(url):
     op = urllib.request.build_opener(NoRedirect)
     cur, use_tok = url, TOK
     for _ in range(6):
-        try:
-            r = op.open(_req(cur, use_tok, accept="*/*"), timeout=300)
-            return r.getcode(), r.read()
-        except urllib.error.HTTPError as e:
-            if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
-                cur, use_tok = e.headers["Location"], None
-                continue
-            return e.code, e.read()
+        for attempt in range(4):
+            try:
+                r = op.open(_req(cur, use_tok, accept="*/*"), timeout=300)
+                return r.getcode(), r.read()
+            except urllib.error.HTTPError as e:
+                if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
+                    cur, use_tok = e.headers["Location"], None
+                    break
+                return e.code, e.read()
+            except Exception:
+                if attempt == 3:
+                    return 0, b""
+                time.sleep(2 + 3 * attempt)
     return 0, b""
 
 

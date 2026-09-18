@@ -275,6 +275,11 @@ python tools/preview_ui.py --shot --run --dnd --drop --dnd-x 300  # 运行中拖
 > 预览脚本对 `.preview/` 用**增量同步**而不是 `rmtree`：本机宿主对批量删除有配额限制
 > （单回合 50 个文件），整目录删会被拦掉；同理 `vite.config.js` 里设了 `emptyOutDir: false`，
 > 构建前要清 `dist` 请手动跑 `npm run clean`。
+>
+> 副作用要知道：`emptyOutDir: false` 意味着 `dist/assets/` 会**同时留着新旧 hash 的文件**
+> （比如同时存在 `index-Bbrp6bj3.js` 与上一版 `index-DUl211eY.js`），
+> 而 `tauri build` 会把整个 `dist/` 都嵌进 exe —— 所以打进包的 exe 里能看到多个 asset 名字。
+> `index.html` 引用的始终是最新那个，功能不受影响，只是白多几十 KB。想干净就先 `npm run clean`。
 
 ⚠️ 注意打包顺序：`tauri build` 会在开头跑一次 `vite build`。
 如果打包启动**之后**才改前端，产出的安装包里还是旧界面——改完前端要重新打包一次
