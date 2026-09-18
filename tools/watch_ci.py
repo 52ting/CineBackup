@@ -217,6 +217,9 @@ def cmd_watch(max_wait=3000):
             return
         time.sleep(20)
         w = api("/repos/%s/%s/actions/runs/%s" % (OWNER, REPO, w["id"]))
+        if "__status__" in w:  # API 报错（限流 / 令牌过期）别让 KeyError 把监视打断
+            print("轮询失败 HTTP %s：%s" % (w["__status__"], w.get("__body__", "")[:200]))
+            return
     print()
     if w.get("conclusion") == "success":
         print("== 构建成功，下载产物 ==")
