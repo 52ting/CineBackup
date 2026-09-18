@@ -1,0 +1,65 @@
+name: build-macos
+
+# 手动机打（Actions 页面点 Run workflow），或推 tag 时自动出包。
+# 产物是未签名的 .dmg / .app，下载后按 README 第五节去掉隔离属性即可运行。
+on:
+  workflow_dispatch:
+    inputs:
+      universal:
+        description: "打包通用二进制（Intel + Apple Silicon）"
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    # macos-latest 目前是 Apple Silicon（arm64）
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci || npm install
+
+      - name: 打包（通用二进制）
+        if: ${{ github.event_name == 'push' || inputs.universal }}
+        run: npm run tauri build -- --target universal-apple-darwin
+
+      - name: 打包（仅本机架构）
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.universal }}
+        run: npm run tauri build
+
+      - name: 上传产物（通用二进制）
+        if: ${{ github.event_name == 'push' || inputs.universal }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CineBackup-macOS-universal
+          if-no-files-found: error
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+
+      - name: 上传产物（本机架构）
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.universal }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CineBackup-macOS-host
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app

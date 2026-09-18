@@ -1,0 +1,24 @@
+# ---- 前端 ----
+node_modules/
+dist/
+.vite/
+.preview/
+# vite 加载 ESM 配置时留下的临时文件，会越攒越多
+vite.config.js.timestamp-*
+*.timestamp-*.mjs
+
+# ---- Rust / Tauri ----
+src-tauri/target/
+src-tauri/gen/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
+# ---- 任务文件（个人路径，不入库）----
+task-*.json
+*.cinebackup.json
