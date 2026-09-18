@@ -3,7 +3,7 @@
 //! 对应需求原文：
 //! 1. 目标文件不存在            → 执行完整拷贝
 //! 2. 目标文件已存在、大小不一致 → 启用断点续传，从目标文件末尾继续写入
-//! 3. 目标文件已存在、大小一致   → 计算 xxHash64：相同 → 跳过；不同 → 覆盖
+//! 3. 目标文件已存在、大小一致   → 计算内容哈希（默认 SHA-256）：相同 → 跳过；不同 → 覆盖
 //!
 //! 另外验证两条容易被忽略的边界：
 //! - 单次写入必须 ≤ 4 MiB 块（证明没有把大文件整块读进内存）
@@ -19,10 +19,13 @@ use std::sync::atomic::AtomicBool;
 
 use cinebackup_lib::copy::{self, CopyMode};
 use cinebackup_lib::events::ScanProgress;
-use cinebackup_lib::hash;
+use cinebackup_lib::hash::{self, HashAlgo};
 use cinebackup_lib::scan;
 use cinebackup_lib::types::{JobOptions, PlannedAction};
 use cinebackup_lib::util::CHUNK_SIZE;
+
+/// 本文件统一用默认算法（SHA-256）跑，另有一条 `t12` 专门盯算法选择
+const ALGO: HashAlgo = HashAlgo::Sha256;
 
 // ---------------------------------------------------------------- 测试脚手架
 
@@ -56,9 +59,9 @@ fn write_file(p: &Path, data: &[u8]) {
     f.sync_all().unwrap();
 }
 
-fn digest(p: &Path) -> u64 {
+fn digest(p: &Path) -> hash::Digest {
     let cancel = AtomicBool::new(false);
-    hash::hash_file(p, &cancel, |_| {}).unwrap().0
+    hash::hash_file(p, ALGO, &cancel, |_| {}).unwrap().0
 }
 
 fn size_of(p: &Path) -> u64 {
@@ -164,8 +167,8 @@ fn t3_same_size_same_hash_is_identical() {
 
     let cancel = AtomicBool::new(false);
     assert!(
-        hash::files_identical(&a, &b, &cancel, |_| {}).unwrap(),
-        "大小与 xxHash64 都相同 → 应判定一致（跳过）"
+        hash::files_identical(&a, &b, ALGO, &cancel, |_| {}).unwrap(),
+        "大小与内容哈希都相同 → 应判定一致（跳过）"
     );
 }
 
@@ -186,7 +189,7 @@ fn t4_same_size_different_hash_is_not_identical() {
     assert_eq!(size_of(&a), size_of(&b), "前提：两者大小必须相同");
     let cancel = AtomicBool::new(false);
     assert!(
-        !hash::files_identical(&a, &b, &cancel, |_| {}).unwrap(),
+        !hash::files_identical(&a, &b, ALGO, &cancel, |_| {}).unwrap(),
         "大小相同但哈希不同 → 必须判定不一致（覆盖）"
     );
 
@@ -207,7 +210,7 @@ fn t4b_size_differs_short_circuits_without_hashing() {
     let cancel = AtomicBool::new(false);
     // 大小不同 → 必须直接 false，且回调一次都不该被触发（证明没做无谓的哈希）
     let mut calls = 0u64;
-    let same = hash::files_identical(&a, &b, &cancel, |_| calls += 1).unwrap();
+    let same = hash::files_identical(&a, &b, ALGO, &cancel, |_| calls += 1).unwrap();
     assert!(!same);
     assert_eq!(calls, 0, "大小不同应短路返回，不应读取任何字节");
 }
@@ -231,7 +234,7 @@ fn t5_prefix_mismatch_rejects_resume() {
     write_file(&dst, &bad);
 
     let cancel = AtomicBool::new(false);
-    let ok = hash::resume_prefix_ok(&src, &dst, half as u64, &cancel, |_| {}).unwrap();
+    let ok = hash::resume_prefix_ok(&src, &dst, half as u64, ALGO, &cancel, |_| {}).unwrap();
     assert!(!ok, "前缀不一致时必须拒绝续传，改为从头覆盖");
 }
 
@@ -246,7 +249,7 @@ fn t6_clean_prefix_allows_resume() {
     write_file(&dst, &data[..half]);
 
     let cancel = AtomicBool::new(false);
-    let ok = hash::resume_prefix_ok(&src, &dst, half as u64, &cancel, |_| {}).unwrap();
+    let ok = hash::resume_prefix_ok(&src, &dst, half as u64, ALGO, &cancel, |_| {}).unwrap();
     assert!(ok, "前缀完全一致时应允许安全续传");
 }
 
@@ -313,7 +316,7 @@ fn t9_empty_and_zero_byte_files() {
     // 空文件大小相同 → files_identical 应直接判 true，不做哈希
     let other = d.join("empty2.bin");
     write_file(&other, b"");
-    assert!(hash::files_identical(&src, &other, &cancel, |_| {}).unwrap());
+    assert!(hash::files_identical(&src, &other, ALGO, &cancel, |_| {}).unwrap());
 }
 
 // ---------------------------------------------------------------- 计划层：三条规则的联合判定
@@ -352,6 +355,7 @@ fn t10_plan_classifies_all_four_cases() {
         quick_scan: false,      // 关掉快速扫描 → 大小相同的要真算哈希
         resume_prefix_check: true,
         verify_after_copy: true,
+        hash_algo: HashAlgo::Sha256,
     };
 
     let mut cb = |_sp: &ScanProgress| {};
@@ -451,4 +455,54 @@ fn t11_plan_marks_source_index() {
 
     let _ = fs::remove_dir_all(&d);
     println!("\n  ✓ 每个文件都正确挂到了自己的源上\n");
+}
+
+// ---------------------------------------------------------------- 校验算法
+
+/// 界面上的「校验值」必须是 SHA-256（64 位十六进制），不是 xxHash64（16 位）。
+/// 顺带确认算法选择器能在两种算法之间切换，且同一种算法内部自洽。
+#[test]
+fn t12_sha256_is_default_and_switchable() {
+    let d = tmpdir("t12");
+    let f = d.join("clip.bin");
+    let data = make_data(3 * 1024 * 1024 + 77, 4242);
+    write_file(&f, &data);
+    let cancel = AtomicBool::new(false);
+
+    // 默认选项 = SHA-256
+    assert_eq!(
+        JobOptions::default().hash_algo,
+        HashAlgo::Sha256,
+        "默认校验算法必须是 SHA-256"
+    );
+
+    let (sha, n) = hash::hash_file(&f, HashAlgo::Sha256, &cancel, |_| {}).unwrap();
+    assert_eq!(n as usize, data.len());
+    assert_eq!(sha.algo(), HashAlgo::Sha256);
+    assert_eq!(sha.hex().len(), 64, "SHA-256 摘要是 64 位十六进制");
+    assert_eq!(sha.hex().len(), HashAlgo::Sha256.hex_len());
+    assert!(
+        sha.hex().chars().all(|c| c.is_ascii_hexdigit()),
+        "摘要只能是十六进制字符：{}",
+        sha.hex()
+    );
+    assert_eq!(sha.short(8).len(), 8);
+
+    // 切成 xxHash64 依然可用，且两个算法不会给出同样的摘要
+    let (xx, _) = hash::hash_file(&f, HashAlgo::Xxh64, &cancel, |_| {}).unwrap();
+    assert_eq!(xx.hex().len(), 16);
+    assert_ne!(sha, xx, "两种算法不应被串成同一条路径");
+
+    // 同算法下「整个文件」与「先算前缀再算剩余」无关，这里只验证可复现
+    let (sha2, _) = hash::hash_file(&f, HashAlgo::Sha256, &cancel, |_| {}).unwrap();
+    assert_eq!(sha, sha2, "同一文件两次结果必须一致");
+
+    // serde 短标识（写进任务 JSON 的那个）能被解析回同一算法
+    assert_eq!(HashAlgo::parse(HashAlgo::Sha256.slug()), Some(HashAlgo::Sha256));
+    assert_eq!(HashAlgo::parse("xxh64"), Some(HashAlgo::Xxh64));
+    assert_eq!(HashAlgo::parse("sha256"), Some(HashAlgo::Sha256));
+    // 任务 JSON 里 key 的写法由 types.rs 的单元测试盯（见 hash_algo_json_key）
+
+    let _ = fs::remove_dir_all(&d);
+    println!("\n  ✓ 默认 SHA-256，可切 xxHash64\n");
 }

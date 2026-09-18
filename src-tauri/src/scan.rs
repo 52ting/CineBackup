@@ -8,9 +8,11 @@
 //! 目标不存在                → Copy      完整拷贝
 //! 目标存在，大小不一致       → Resume    断点续传（从目标末尾续写）
 //! 目标存在，大小一致
-//!    ├ xxHash64 相同        → Skip      跳过
-//!    └ xxHash64 不同        → Overwrite 覆盖
+//!    ├ 内容哈希相同         → Skip      跳过
+//!    └ 内容哈希不同         → Overwrite 覆盖
 //! ```
+//!
+//! 内容哈希用哪种算法由 `JobOptions.hash_algo` 决定（默认 SHA-256）。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -206,21 +208,22 @@ pub fn build_plan(
                 false,
             )
         } else {
-            // 大小一致 → 必须用 xxHash64 判定
+            // 大小一致 → 必须用哈希判定（默认 SHA-256，可切 xxHash64）
+            let algo = opts.hash_algo;
             let mut hashed: u64 = 0;
-            let same = hash::files_identical(&src, &dst, cancel, |n| {
+            let same = hash::files_identical(&src, &dst, algo, cancel, |n| {
                 hashed += n;
             });
             sp.bytes_hashed = sp.bytes_hashed.saturating_add(hashed);
             match same {
                 Ok(true) => (
                     PlannedAction::Skip,
-                    "大小一致且 xxHash64 相同".into(),
+                    format!("大小一致且 {} 相同", algo.label()),
                     true,
                 ),
                 Ok(false) => (
                     PlannedAction::Overwrite,
-                    "大小一致但 xxHash64 不同".into(),
+                    format!("大小一致但 {} 不同", algo.label()),
                     false,
                 ),
                 Err(e) => {

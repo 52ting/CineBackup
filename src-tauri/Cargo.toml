@@ -1,6 +1,6 @@
 [package]
 name = "cinebackup"
-version = "0.4.1"
+version = "0.4.2"
 description = "CineBackup - 影视素材 / DCP 跨平台备份工具"
 authors = ["Ronnie"]
 edition = "2021"
@@ -19,6 +19,7 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2.5"
+sha2 = "0.10"
 xxhash-rust = { version = "0.8.12", features = ["xxh64"] }
 
 # ---- 平台相关：读取卷文件系统类型 ----

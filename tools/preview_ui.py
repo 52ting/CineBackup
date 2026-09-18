@@ -17,12 +17,14 @@
     python tools/preview_ui.py --shot --dnd --dnd-x 1150 --dnd-y 300   # 拖拽悬停态
     python tools/preview_ui.py --shot --dnd --drop --dnd-x 1150        # 真松手：右栏应设为目标
     python tools/preview_ui.py --shot --run --dnd --drop --dnd-x 300   # 运行中拖入左栏 → 自动排队
+    python tools/preview_ui.py --shot --opts                          # 展开「任务选项」（校验算法选择器）
 
 预览页 URL 参数（浏览器里也能手动看效果）：
     ?theme=dark|light   强制主题
-    ?run=1              任务运行中态（中栏换成每个源一条的传输进度）
+    ?run=1              任务运行中态（中栏换成每个源一条的传输进度，并投递几条校验结果）
     ?run=1&fold=1       运行中把中栏切回磁盘视图
     ?dnd=1&x=&y=        拖拽悬停态；再加 &drop=1 会真的松手投递一次
+    ?opts=1             展开任务选项下拉
 """
 
 import argparse
@@ -173,6 +175,44 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
       };
       push();
       setInterval(push, 600);
+
+      // 文件级结果 → 「校验结果」表里能看到 SHA-256 的 64 位校验值
+      // （故意混一条 fail 和一条 skip，覆盖有值 / 无值两种单元格）
+      const OK = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+      const H1 = "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4";
+      const H2 = "9f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4";
+      const RESULTS = [
+        {
+          path: "D:\\\\拍摄素材\\\\《山海》A001_20260901\\\\A001_C001_0701AB.R3D",
+          target: "E:\\\\CineBackup\\\\2026-09-18\\\\《山海》A001_20260901\\\\A001_C001_0701AB.R3D",
+          size: 12884901888, status: "pass",
+          srcHash: OK, dstHash: OK, message: "SHA-256 校验一致",
+        },
+        {
+          path: "D:\\\\拍摄素材\\\\《山海》A001_20260901\\\\A001_C002_0702AC.R3D",
+          target: "E:\\\\CineBackup\\\\2026-09-18\\\\《山海》A001_20260901\\\\A001_C002_0702AC.R3D",
+          size: 8589934592, status: "pass",
+          srcHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          dstHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          message: "SHA-256 校验一致",
+        },
+        {
+          path: "Z:\\\\DCP\\\\shanhai_final_dcp.zip",
+          target: "E:\\\\CineBackup\\\\2026-09-18\\\\shanhai_final_dcp.zip",
+          size: 26843545600, status: "fail",
+          srcHash: H1, dstHash: H2,
+          message: "SHA-256 不一致（源 " + H1.slice(0, 8) + " / 目标 " + H2.slice(0, 8) + "，字节 26843545600 vs 26843545600）",
+        },
+        {
+          path: "D:\\\\PROXY\\\\day03.mov",
+          target: "E:\\\\CineBackup\\\\2026-09-18\\\\PROXY\\\\day03.mov",
+          size: 3221225472, status: "skip",
+          srcHash: "", dstHash: "", message: "按选择跳过，未校验",
+        },
+      ];
+      RESULTS.forEach((r, i) =>
+        setTimeout(() => window.__cbEmit("cb:file-result", r), 1200 + i * 300)
+      );
     }, 2600);
   }
 
@@ -218,6 +258,11 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
         await sleep(1200);
         document.getElementById("btnFoldMid")?.click();
       }
+    }
+    // ?opts=1 → 展开任务选项（看校验算法选择器）
+    if (qs.has("opts")) {
+      await sleep(280);
+      document.getElementById("btnOptions")?.click();
     }
   });
 })();
@@ -360,6 +405,11 @@ def main():
         action="store_true",
         help="截「任务运行中」态：中栏折叠磁盘、换成每个源一条的传输列表",
     )
+    ap.add_argument(
+        "--opts",
+        action="store_true",
+        help="打开「任务选项」下拉（核对校验算法选择器）",
+    )
     args = ap.parse_args()
 
     if args.out:
@@ -374,6 +424,8 @@ def main():
             name += "-run"
         if args.fold:
             name += "-fold"
+        if args.opts:
+            name += "-opts"
         if args.theme:
             name += "-" + args.theme
         out = os.path.join(ROOT, "tools", name + ".png")
@@ -389,6 +441,8 @@ def main():
         parts.append("run=1")
         if args.fold:
             parts.append("fold=1")
+    if args.opts:
+        parts.append("opts=1")
     query = "?" + "&".join(parts) if parts else ""
 
     build()

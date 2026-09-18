@@ -119,6 +119,19 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: var(--text-mute); background-clip: content-box; }
 
 .mono { font-family: var(--mono); font-size: 11.5px; }
+
+/* 校验值列：SHA-256 是 64 个十六进制字符，一行放不下就省略号，悬停看全文。
+   `user-select: all` 让单击整格即全选哈希，方便 Ctrl+C 取走完整校验值。 */
+.hash-cell {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: -.1px;
+  color: var(--text-dim);
+  max-width: 188px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  user-select: all; cursor: text;
+}
+.hash-cell.none { user-select: none; cursor: default; opacity: .5; }
+/* 状态列（✅ 通过）不能被折成两行 */
+.result-wrap .tbl td:first-child,
+.result-wrap .tbl th:first-child { white-space: nowrap; }
 .mini { font-size: 11.5px; color: var(--text-dim); }
 .hidden { display: none !important; }
 
@@ -461,7 +474,8 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
   background: var(--panel); border: 1px solid var(--border-strong);
   border-radius: 10px; box-shadow: var(--shadow);
-  min-width: 215px; overflow: hidden; padding: 4px;
+  min-width: 296px; max-width: min(360px, 92vw);
+  overflow: hidden; padding: 4px;
 }
 .dropdown.dropup .dropdown-menu { top: auto; bottom: calc(100% + 6px); }
 .dropdown-menu button {
@@ -475,6 +489,32 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
   padding: 6px 11px 7px; letter-spacing: .3px;
 }
 .opt-title + .chk { border-top: 1px solid var(--border); }
+
+/* 校验算法选择器：算法直接决定「校验值」这一列是 64 位还是 16 位十六进制 */
+.opt-row {
+  padding: 4px 11px 9px;
+  border-bottom: 1px solid var(--border);
+}
+.opt-label {
+  display: block; font-size: 11.5px; color: var(--text-dim); margin-bottom: 5px;
+}
+.opt-select {
+  width: 100%; font-family: inherit; font-size: 12px;
+  padding: 5px 7px; border-radius: 7px; cursor: pointer;
+  color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+}
+.opt-select:focus { outline: none; border-color: var(--primary); }
+.opt-note {
+  display: block; margin-top: 5px;
+  font-size: 10.5px; line-height: 1.5; color: var(--text-dim);
+}
+.opt-note code {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 10px; padding: 0 3px; border-radius: 3px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  white-space: nowrap;
+}
 .dropdown-menu .chk {
   display: flex; gap: 8px; align-items: flex-start; cursor: pointer;
   padding: 7px 11px; font-size: 11.5px; line-height: 1.5; border-radius: 7px;
@@ -531,7 +571,7 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 
 /* ============================================================ 底部：日志 / 校验 */
 .bottom {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr);
   gap: 10px; padding: 10px 12px 12px;
   height: 196px; flex: none;
 }
@@ -565,6 +605,8 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 .tbl tbody tr:hover { background: var(--hover); }
 .empty-row td { color: var(--text-mute); text-align: center; padding: 20px 10px; font-size: 12px; }
 .path-cell { word-break: break-all; line-height: 1.45; }
+/* 结果表里一格里只放文件名（完整路径在 title 里），否则窄栏会被路径撑成三行 */
+.result-wrap .path-cell { word-break: break-word; }
 
 .fs-tag {
   display: inline-block; padding: 1px 7px; border-radius: 5px;

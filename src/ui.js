@@ -453,10 +453,20 @@ const ST_MAP = {
   copy: { icon: "→", cls: "row-skip", label: "已拷贝" },
 };
 export function resetResults() {
-  $("resultTbody").innerHTML = `<tr class="empty-row"><td colspan="4">校验完成后在此展示每个文件的结果。</td></tr>`;
+  $("resultTbody").innerHTML = `<tr class="empty-row"><td colspan="5">校验完成后在此展示每个文件的结果。</td></tr>`;
   $("cntPass").textContent = "0";
   $("cntFail").textContent = "0";
   $("cntSkip").textContent = "0";
+}
+/** 校验值列的表头跟着所选算法走（SHA-256 = 64 字符 / xxHash64 = 16 字符） */
+export function setHashHeader(label) {
+  const th = $("thHash");
+  if (!th) return;
+  th.textContent = label || "校验值";
+  th.title =
+    label === "xxHash64"
+      ? "内容哈希 · xxHash64（16 位十六进制）"
+      : "内容哈希 · SHA-256（64 位十六进制，可与 shasum -a 256 对照）";
 }
 export function addResult(r) {
   const tb = $("resultTbody");
@@ -465,10 +475,23 @@ export function addResult(r) {
   const m = ST_MAP[r.status] || ST_MAP.skip;
   const tr = document.createElement("tr");
   tr.className = m.cls;
+
+  // 校验值：源/目标不一致时（fail）把两份都塞进 tooltip，方便比对
+  const src = r.srcHash || "";
+  const dst = r.dstHash || "";
+  let hashCell;
+  if (!src) {
+    hashCell = `<td class="hash-cell none">—</td>`;
+  } else {
+    const tip = dst && dst !== src ? `源  ${src}\n目标 ${dst}` : src;
+    hashCell = `<td class="hash-cell" title="${esc(tip)}">${esc(src)}</td>`;
+  }
+
   tr.innerHTML = `<td><span class="${r.status === "fail" || r.status === "error" ? "st-fail" : r.status === "pass" ? "st-pass" : "st-skip"}">${m.icon} ${m.label}</span></td>
-    <td class="path-cell mono">${esc(r.path)}</td>
+    <td class="path-cell mono" title="${esc(r.path)}">${esc(baseName(r.path))}</td>
     <td class="mono">${fmtBytes(r.size)}</td>
-    <td>${esc(r.message || "")}</td>`;
+    ${hashCell}
+    <td title="${esc(r.message || "")}">${esc(r.message || "")}</td>`;
   tb.appendChild(tr);
 }
 export function bumpCounter(kind) {

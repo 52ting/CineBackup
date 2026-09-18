@@ -8,7 +8,7 @@
 //!    ↓
 //! 串行拷贝每个源（文件 / 文件夹），逐个文件按规则决定 拷贝 / 续传 / 跳过 / 覆盖
 //!    ↓  （遇到同名冲突 → 阻塞等待弹窗回复）
-//! xxHash64 全量校验
+//! 全量哈希校验（默认 SHA-256，见 `hash.rs`）
 //!    ↓
 //! 汇总 job-end
 //! ```
@@ -255,7 +255,14 @@ fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, St
         if idx.is_empty() {
             events::emit_log(app, "info", "没有需要校验的文件。");
         } else {
-            let vs = verify::run_verify(app, &plan.items, &idx, &st.cancel, total);
+            let vs = verify::run_verify(
+                app,
+                &plan.items,
+                &idx,
+                req.options.hash_algo,
+                &st.cancel,
+                total,
+            );
             end.pass += vs.pass;
             end.failed += vs.failed + vs.errors;
         }
@@ -447,7 +454,7 @@ fn run_copy_phase(
                 events::emit_log(
                     app,
                     "info",
-                    format!("跳过（预扫描已确认 xxHash64 一致）：{}", plan.items[i].src),
+                    format!("跳过（预扫描已确认 {} 一致）：{}", opts.hash_algo.label(), plan.items[i].src),
                 );
             } else if plan.items[i].action == PlannedAction::Conflict {
                 events::emit_log(app, "warn", format!("按用户选择跳过：{}", plan.items[i].src));
@@ -477,12 +484,13 @@ fn run_copy_phase(
                 app,
                 "info",
                 format!(
-                    "续传前校验已写入部分（{}）：{}",
+                    "续传前校验已写入部分（{}，{}）：{}",
                     human_bytes(existing),
+                    opts.hash_algo.label(),
                     path_to_string(&dst)
                 ),
             );
-            let ok = hash::resume_prefix_ok(&src, &dst, existing, &st.cancel, |_| {});
+            let ok = hash::resume_prefix_ok(&src, &dst, existing, opts.hash_algo, &st.cancel, |_| {});
             match ok {
                 Ok(true) => {}
                 Ok(false) => {
@@ -779,7 +787,7 @@ fn build_verify_set(
         match it.final_action.unwrap_or(it.action) {
             PlannedAction::Skip => {
                 if it.hash_checked {
-                    // 预扫描已经比对过 xxHash64，直接判定通过
+                    // 预扫描已经比对过内容哈希，直接判定通过
                     pre_pass += 1;
                     events::emit_file_result(
                         app,
@@ -790,7 +798,7 @@ fn build_verify_set(
                             status: "pass".into(),
                             src_hash: String::new(),
                             dst_hash: String::new(),
-                            message: "跳过（预扫描 xxHash64 已一致）".into(),
+                            message: format!("跳过（预扫描 {} 已一致）", opts.hash_algo.label()),
                         },
                     );
                 } else if opts.quick_scan && opts.verify_after_copy {

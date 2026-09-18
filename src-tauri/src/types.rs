@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::hash::HashAlgo;
+
 // ---------------------------------------------------------------- 源 / 目标
 
 /// 单个源条目（前端点「添加源」时由 `probe_path` 返回）
@@ -27,9 +29,9 @@ pub enum PlannedAction {
     Copy,
     /// 大小不一致 → 断点续传（从目标文件末尾继续写入）
     Resume,
-    /// 大小一致且 xxHash64 相同 → 跳过
+    /// 大小一致且哈希相同 → 跳过
     Skip,
-    /// 大小一致但 xxHash64 不同 → 覆盖
+    /// 大小一致但哈希不同 → 覆盖
     Overwrite,
     /// 询问模式下的「待用户决定」
     Conflict,
@@ -104,10 +106,14 @@ pub struct JobOptions {
     pub ask_on_conflict: bool,
     /// 快速扫描：大小相同即视为已备份，预扫描阶段不做哈希比对
     pub quick_scan: bool,
-    /// 续传前校验已写入部分（比对前缀 xxHash64）
+    /// 续传前校验已写入部分（比对前缀哈希）
     pub resume_prefix_check: bool,
     /// 拷贝完成后自动全量校验
     pub verify_after_copy: bool,
+    /// 内容哈希算法：默认 SHA-256，可切 xxHash64 提速。
+    /// 同一次任务里预扫描查重 / 续传前缀 / 最终校验都用这一种。
+    #[serde(default)]
+    pub hash_algo: HashAlgo,
 }
 
 impl Default for JobOptions {
@@ -117,6 +123,7 @@ impl Default for JobOptions {
             quick_scan: false,
             resume_prefix_check: true,
             verify_after_copy: true,
+            hash_algo: HashAlgo::default(),
         }
     }
 }
@@ -164,7 +171,10 @@ pub struct FileResult {
     pub size: u64,
     /// "pass" | "fail" | "error" | "skip"
     pub status: String,
+    /// 源文件内容哈希（十六进制）。
+    /// 算法见 `JobOptions.hash_algo`：SHA-256 = 64 字符 / xxHash64 = 16 字符
     pub src_hash: String,
+    /// 目标文件内容哈希（同上）
     pub dst_hash: String,
     pub message: String,
 }
@@ -184,4 +194,27 @@ pub struct JobEnd {
     pub total_bytes: u64,
     pub elapsed_secs: f64,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 任务 JSON 里的写法：`hashAlgo` 存 slug；缺这个字段的老任务文件必须能照常加载
+    #[test]
+    fn hash_algo_json_key() {
+        let json = serde_json::to_string(&JobOptions::default()).unwrap();
+        assert!(json.contains("\"hashAlgo\":\"sha256\""), "序列化结果：{json}");
+
+        // 0.4.1 及更早的任务文件没有 hashAlgo 字段 → 用默认值补齐
+        let legacy = r#"{"askOnConflict":false,"quickScan":true,"resumePrefixCheck":true,"verifyAfterCopy":true}"#;
+        let o: JobOptions = serde_json::from_str(legacy).expect("老任务文件应能加载");
+        assert_eq!(o.hash_algo, HashAlgo::Sha256);
+        assert!(o.quick_scan);
+
+        // 显式指定 xxh64 也能读回来
+        let explicit = r#"{"askOnConflict":false,"quickScan":false,"resumePrefixCheck":true,"verifyAfterCopy":true,"hashAlgo":"xxh64"}"#;
+        let o2: JobOptions = serde_json::from_str(explicit).unwrap();
+        assert_eq!(o2.hash_algo, HashAlgo::Xxh64);
+    }
 }

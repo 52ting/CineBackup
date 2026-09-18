@@ -1,6 +1,7 @@
-//! 拷贝完成后的 xxHash64 校验阶段
+//! 拷贝完成后的全量哈希校验阶段
 //!
-//! - 逐文件计算「源文件」与「目标同名文件」的 xxHash64 并比对
+//! - 逐文件计算「源文件」与「目标同名文件」的内容哈希并比对
+//!   （算法由 `JobOptions.hash_algo` 决定，默认 **SHA-256**，64 位十六进制）
 //! - 文件夹源：其下每个文件都已在 `Plan` 中被展开成独立条目，等价于递归遍历比对
 //! - 读取失败（权限 / 盘掉线）→ 该文件标记为 error，不中断整体流程
 //! - 单独统计校验速度与剩余时间（与拷贝阶段的速度互不干扰）
@@ -12,7 +13,7 @@ use std::time::Instant;
 use tauri::AppHandle;
 
 use crate::events::{self, ProgressReport};
-use crate::hash::{self, hash_hex};
+use crate::hash::{self, HashAlgo};
 use crate::types::{FileResult, PlanItem};
 use crate::util::{human_bytes, path_to_string, RateMeter, Throttle};
 
@@ -28,12 +29,14 @@ pub struct VerifyStats {
 ///
 /// - `items`：完整计划；`idx`：本次需要校验的条目下标
 ///   （= 所有被写入过的文件 + 快速扫描模式下未做过哈希比对而被跳过的文件）
+/// - `algo`：内容哈希算法（同一次任务与预扫描、续传前缀保持一致）
 /// - `total_bytes`：本轮校验将读取的总字节数（= Σ size × 2，源一遍、目标一遍），
 ///   用于换算剩余时间
 pub fn run_verify(
     app: &AppHandle,
     items: &[PlanItem],
     idx: &[usize],
+    algo: HashAlgo,
     cancel: &AtomicBool,
     total_bytes: u64,
 ) -> VerifyStats {
@@ -48,7 +51,8 @@ pub fn run_verify(
         app,
         "info",
         format!(
-            "校验阶段开始：共 {} 个文件，需读取 {}（源 + 目标各一遍）",
+            "校验阶段开始（{}）：共 {} 个文件，需读取 {}（源 + 目标各一遍）",
+            algo.label(),
             files_total,
             human_bytes(total_bytes)
         ),
@@ -70,8 +74,8 @@ pub fn run_verify(
             file_read = file_read.saturating_add(n);
         };
 
-        let h_src = hash::hash_file(src, cancel, &mut on);
-        let h_dst = hash::hash_file(dst, cancel, &mut on);
+        let h_src = hash::hash_file(src, algo, cancel, &mut on);
+        let h_dst = hash::hash_file(dst, algo, cancel, &mut on);
 
         let result = match (h_src, h_dst) {
             (Ok((a, na)), Ok((b, nb))) => {
@@ -83,9 +87,9 @@ pub fn run_verify(
                         target: path_to_string(dst),
                         size: it.size,
                         status: "pass".into(),
-                        src_hash: hash_hex(a),
-                        dst_hash: hash_hex(b),
-                        message: "xxHash64 一致".into(),
+                        src_hash: a.hex().to_string(),
+                        dst_hash: b.hex().to_string(),
+                        message: format!("{} 校验一致", algo.label()),
                     }
                 } else {
                     stats.failed += 1;
@@ -94,12 +98,13 @@ pub fn run_verify(
                         target: path_to_string(dst),
                         size: it.size,
                         status: "fail".into(),
-                        src_hash: hash_hex(a),
-                        dst_hash: hash_hex(b),
+                        src_hash: a.hex().to_string(),
+                        dst_hash: b.hex().to_string(),
                         message: format!(
-                            "哈希不一致（源 {} / 目标 {}，字节 {} vs {}）",
-                            &hash_hex(a)[..8],
-                            &hash_hex(b)[..8],
+                            "{} 不一致（源 {} / 目标 {}，字节 {} vs {}）",
+                            algo.label(),
+                            a.short(8),
+                            b.short(8),
                             na,
                             nb
                         ),

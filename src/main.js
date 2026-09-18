@@ -628,7 +628,23 @@ function collectOptions() {
     quickScan: $("optQuick").checked,
     resumePrefixCheck: $("optPrefix").checked,
     verifyAfterCopy: $("optVerify").checked,
+    // "sha256"（默认）| "xxh64" —— 预扫描查重 / 续传前缀 / 最终校验都用它
+    hashAlgo: $("optAlgo").value,
   };
+}
+
+/** 算法选择器改名时，结果表头与说明文案一起跟上 */
+function refreshAlgoUi() {
+  const algo = $("optAlgo").value;
+  const label = algo === "xxh64" ? "xxHash64" : "SHA-256";
+  ui.setHashHeader(label);
+  const note = $("algoNote");
+  if (note) {
+    note.innerHTML =
+      algo === "xxh64"
+        ? "吞吐高（约 5~10 GB/s），但摘要只有 16 位十六进制，不适合对外核对"
+        : "标准校验和，可与 <code>shasum -a 256</code> / <code>certutil -hashfile</code> 对照";
+  }
 }
 function guard() {
   if (state.running) {
@@ -657,6 +673,7 @@ async function run(dryRun) {
   state.running = true;
   state.planBytes = 0;
   ui.resetProgress();
+  refreshAlgoUi(); // 结果表的「校验值」列头要跟本次任务实际用的算法一致
   ui.resetResults();
   ui.renderStatus("scanning");
   // 中栏由「磁盘」切到「传输」：收起磁盘网格，改看每个源自己的进度条
@@ -765,6 +782,9 @@ async function loadTask() {
   if (typeof o.quickScan === "boolean") $("optQuick").checked = o.quickScan;
   if (typeof o.resumePrefixCheck === "boolean") $("optPrefix").checked = o.resumePrefixCheck;
   if (typeof o.verifyAfterCopy === "boolean") $("optVerify").checked = o.verifyAfterCopy;
+  // 老任务文件没有这个字段 → 保持当前选择（默认就是 SHA-256）
+  if (o.hashAlgo === "xxh64" || o.hashAlgo === "sha256") $("optAlgo").value = o.hashAlgo;
+  refreshAlgoUi();
 
   ui.renderSources(state.sources);
   paintDisks();
@@ -892,6 +912,12 @@ $("btnOptions").addEventListener("click", (ev) => {
 document.addEventListener("click", (ev) => {
   if (!ev.target.closest("#optWrap")) $("optMenu").classList.add("hidden");
 });
+// 换算法 → 结果表头 / 说明文案立刻跟上（真正生效是下一次任务开始时）
+$("optAlgo").addEventListener("change", () => {
+  refreshAlgoUi();
+  const algo = $("optAlgo").value === "xxh64" ? "xxHash64" : "SHA-256";
+  ui.pushLog("info", `校验算法已切换为 ${algo}（对下一次开始的任务生效）。`);
+});
 
 // 中栏右上角箭头：
 //   传输视图 → 折叠传输列表、切回磁盘网格
@@ -948,6 +974,7 @@ function refreshLock() {
 /* ==================== 启动 ==================== */
 subscribe();
 ui.resetProgress();
+refreshAlgoUi();
 ui.resetResults();
 ui.renderSources(state.sources);
 ui.renderTarget(null, null);

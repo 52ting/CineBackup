@@ -93,6 +93,15 @@
             <button class="icon-btn" id="btnOptions" title="任务选项">⋯</button>
             <div class="dropdown-menu hidden" id="optMenu">
               <div class="opt-title">任务选项</div>
+              <div class="opt-row">
+                <span class="opt-label">校验算法</span>
+                <select class="opt-select" id="optAlgo">
+                  <option value="sha256" selected>SHA-256（默认 · 64 位十六进制）</option>
+                  <option value="xxh64">xxHash64（更快 · 16 位十六进制）</option>
+                </select>
+                <span class="opt-note" id="algoNote">标准校验和，可与 <code>shasum -a 256</code> / <code>certutil -hashfile</code> 对照</span>
+              </div>
+              <div class="opt-title">行为</div>
               <label class="chk">
                 <input type="checkbox" id="optAsk" />
                 <span>冲突时弹窗询问（关闭＝按断点续传规则自动判定，推荐大批量备份时关闭）</span>
@@ -103,11 +112,11 @@
               </label>
               <label class="chk">
                 <input type="checkbox" id="optPrefix" checked />
-                <span>续传前校验已写入部分（比对前缀 xxHash64，防止半截块污染，更安全）</span>
+                <span>续传前校验已写入部分（比对前缀哈希，防止半截块污染，更安全）</span>
               </label>
               <label class="chk">
                 <input type="checkbox" id="optVerify" checked />
-                <span>拷贝完成后自动执行 xxHash64 全量校验</span>
+                <span>拷贝完成后自动执行全量校验（按上方所选算法）</span>
               </label>
             </div>
           </div>
@@ -168,14 +177,15 @@
           <table class="tbl">
             <thead>
               <tr>
-                <th style="width: 68px">状态</th>
+                <th style="width: 62px">状态</th>
                 <th>文件</th>
-                <th style="width: 90px">大小</th>
-                <th style="width: 170px">说明</th>
+                <th style="width: 74px">大小</th>
+                <th style="width: 180px" id="thHash" title="内容哈希（十六进制）">SHA-256</th>
+                <th style="width: 146px">说明</th>
               </tr>
             </thead>
             <tbody id="resultTbody">
-              <tr class="empty-row"><td colspan="4">校验完成后在此展示每个文件的结果。</td></tr>
+              <tr class="empty-row"><td colspan="5">校验完成后在此展示每个文件的结果。</td></tr>
             </tbody>
           </table>
         </div>

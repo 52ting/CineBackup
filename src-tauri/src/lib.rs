@@ -4,11 +4,11 @@
 //! - `disks`    磁盘 / 卷枚举（自动拉取本机硬盘，含卷标、容量、只读标志）
 //! - `fsinfo`   磁盘文件系统类型探测（macOS statfs / Windows GetVolumeInformation）
 //! - `walk`     文件/目录判断 + 目录遍历（含 macOS 元数据过滤）
-//! - `hash`     分块流式 xxHash64 计算（绝不整文件读入内存）
+//! - `hash`     分块流式内容哈希（默认 SHA-256，可切 xxHash64，绝不整文件读入内存）
 //! - `copy`     原生分块拷贝，支持断点续传 / Dry Run
 //! - `scan`     冲突预扫描，产出拷贝计划
 //! - `engine`   任务调度：串行串起 扫描 → 拷贝 → 校验，后台线程执行
-//! - `verify`   拷贝完成后的 xxHash64 校验阶段
+//! - `verify`   拷贝完成后的全量哈希校验阶段（默认 SHA-256）
 //! - `task`     JSON 任务保存 / 加载
 //! - `commands` Tauri 命令入口
 
