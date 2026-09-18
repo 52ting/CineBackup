@@ -72,23 +72,29 @@ def check_macho(path, label=""):
     return n >= 2
 
 
+def plist_fields(raw_text):
+    """Info.plist（XML 或二进制 plist）里直接搜关键字段，不做完整解析。"""
+    txt = raw_text.decode("utf-8", "replace") if isinstance(raw_text, bytes) else raw_text
+    pats = {
+        "标识符": (r"com\.[A-Za-z0-9._-]*cinebackup[A-Za-z0-9._-]*", 0),
+        "版本": (r"CFBundleShortVersionString</key>\s*<string>([^<]+)", 1),
+        "最低系统": (r"LSMinimumSystemVersion</key>\s*<string>([^<]+)", 1),
+    }
+    out = {}
+    for label, (pat, grp) in pats.items():
+        m = re.search(pat, txt)
+        out[label] = (m.group(grp) if grp else m.group(0)) if m else "(未找到)"
+    return out
+
+
 def check_plist(app_dir):
     pl = os.path.join(app_dir, "Contents", "Info.plist")
     if not os.path.isfile(pl):
         print("      ⚠ 找不到 Info.plist：%s" % pl)
         return False
-    raw = open(pl, "rb").read()
-    # Info.plist 可能是 XML 也可能是二进制 plist，两种都直接搜可打印字符串
-    txt = raw.decode("utf-8", "replace")
-    fields = {
-        "标识符": r"com\.[A-Za-z0-9._-]*cinebackup[A-Za-z0-9._-]*",
-        "版本": r"CFBundleShortVersionString</key>\s*<string>([^<]+)",
-        "最低系统": r"LSMinimumSystemVersion</key>\s*<string>([^<]+)",
-    }
     print("[plist] %s" % pl)
-    for label, pat in fields.items():
-        m = re.search(pat, txt)
-        print("      %-8s: %s" % (label, m.group(1) if m and m.groups() else (m.group(0) if m else "(未找到)")))
+    for k, v in plist_fields(open(pl, "rb").read()).items():
+        print("      %-8s: %s" % (k, v))
     return True
 
 
@@ -125,6 +131,11 @@ def verify_zip(zip_path):
                 f.write(data)
             check_macho(tmp, "可执行文件")
             os.remove(tmp)
+        plists = [n for n in names if n.endswith("Contents/Info.plist")]
+        if plists:
+            print("[plist] zip 内 %s" % plists[0])
+            for k, v in plist_fields(z.read(plists[0])).items():
+                print("      %-8s: %s" % (k, v))
 
 
 def main():

@@ -11,6 +11,9 @@ vite.config.js.timestamp-*
 src-tauri/target/
 src-tauri/gen/
 
+# ---- 云端产物（watch_ci.py 下载到这里：zip + dmg，几十 MB，不入库）----
+cinebackup-builds/
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/
