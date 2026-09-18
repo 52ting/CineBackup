@@ -1,6 +1,9 @@
 name: build-macos
 
-# 手动机打（Actions 页面点 Run workflow），或推 tag 时自动出包。
+# 三种触发方式：
+#   1) 推送到 main（含首次上传源码）→ 自动出通用二进制包
+#   2) 推 tag v*（如 v0.4.0）      → 自动出包
+#   3) Actions 页面手动 Run workflow（可选只打本机架构）
 # 产物是未签名的 .dmg / .app，下载后按 README 第五节去掉隔离属性即可运行。
 on:
   workflow_dispatch:
@@ -10,6 +13,8 @@ on:
         type: boolean
         default: true
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
