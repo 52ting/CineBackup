@@ -4,6 +4,10 @@ Tauri 2 + Rust 实现的个人用备份工具。面向影视素材、DCP 包这�
 源盘和目标盘可以是 APFS / NTFS / exFAT / FAT32 的任意组合，全程分块流式 IO，几十 GB 的
 ProRes / MXF 也不会爆内存。
 
+**下载**：[最新版本](https://github.com/52ting/CineBackup/releases/latest)
+—— Windows 安装包 / macOS 通用 dmg，**无需登录**直接下。
+**许可证**：[MIT](LICENSE) —— 可自由使用、修改、再分发（详见第十四节）。
+
 ---
 
 ## 一、目录结构与界面
@@ -13,6 +17,7 @@ cinebackup/
 ├── package.json                 # 前端依赖与脚本
 ├── vite.config.js               # Vite 配置
 ├── INSTALL-macOS.md             # ★ 面向非开发者的「装到 Mac」逐步操作指南（含报错对照表）
+├── LICENSE                      # MIT 许可证（见第十四节）
 ├── index.html                   # 模块 1：Tauri 前端 UI（界面结构）
 ├── .github/workflows/
 │   └── build-macos.yml          # ★ 没有 Mac 时用云端 macOS runner 出 dmg（见 5.3）
@@ -25,10 +30,14 @@ cinebackup/
 ├── tools/
 │   ├── build_windows.bat        # ★ Windows 一键打包（自动注入 MSVC 环境 + 预置打包工具）
 │   ├── build_macos.sh           # ★ macOS 一键打包（出 .app + .dmg，支持通用二进制，见第五节）
+│   ├── gh_release.py            # ★ 发布安装包到 GitHub Release（见第十三节）
+│   ├── watch_ci.py              # ★ 盯云端构建 / 取产物（不用开浏览器、不用建 PAT，见 5.3）
 │   ├── make_src_zip.py          # ★ 打包源码 zip（排除构建产物 / 日志），用于搬到 Mac 上编译
+│   ├── verify_dmg.py            # 在 Windows 上校验 dmg 完整性（FAT 头 / Info.plist）
 │   ├── setup_bundler_tools.py   # ★ 镜像加速预置 WiX / NSIS（解决打包下载超时，见 6.4）
 │   ├── preview_ui.py            # ★ 改完界面秒级截图核对（注入假后端，不用编译 Rust）
 │   ├── debug_dom.py             # 把预览页 DOM dump 出来 + 抓控制台（排查前端事件用）
+│   ├── clean_dist.py            # 清 dist（vite 设了 emptyOutDir:false，asset 会累积，打包前清）
 │   ├── probe_mirrors.py         # 实测各 GitHub 镜像吞吐，挑最快的
 │   ├── gen_icons.py             # 零依赖生成占位图标（PNG/ICO/ICNS）
 │   └── env_check.py             # 环境自检（工具链 / 磁盘空间 / 安装位置）
@@ -765,3 +774,43 @@ python tools/gh_release.py publish --draft   # 先建草稿，自己看一眼再
   所以改工具不会重出包。**但如果以后让 CI 去调某个 `tools/` 脚本，记得把它从忽略列表里拿掉。**
 - macOS 包未签名，用户首次打开需要「仍要打开」或
   `xattr -dr com.apple.quarantine /Applications/CineBackup.app`（Release 说明里已写明）。
+
+---
+
+## 十四、许可证
+
+**MIT License** —— 全文见仓库根目录 [`LICENSE`](LICENSE)。
+版权归 **52ting**（`Copyright (c) 2026 52ting`）。
+
+### 你可以做什么
+
+| 行为 | 是否需要额外许可 |
+|---|---|
+| 使用（个人、公司内部、商业用途都算） | 不需要 |
+| 修改、二次开发、再分发 | 不需要 |
+| 打包进你自己的产品一起卖 | 不需要 |
+| 删掉界面上的名字换成自己的 | 不需要 |
+
+**唯一的条件**：保留版权声明和许可证全文 —— 也就是别把 `LICENSE` 删掉、
+别抹掉 `Copyright (c) 2026 52ting` 这一行。
+
+**没有担保（No Warranty）**：软件按「现状」提供，作者不对任何后果负责。
+对备份工具这点要特别说明：**重要素材请务必保留至少两份独立拷贝，并定期做恢复演练** ——
+校验值一致只证明「拷过去的东西没坏」，不证明「这套备份策略本身可靠」。
+
+### 第三方依赖
+
+- **Tauri 生态本身是 MIT / Apache-2.0 双许可**
+  （[官方声明](https://github.com/tauri-apps/tauri#licenses)），与本项目的 MIT 不冲突。
+- Rust 侧直接依赖：`tauri`、`tauri-plugin-dialog`、`serde`、`serde_json`、`sha2`、`xxhash-rust`；
+  前端：`@tauri-apps/api`、`@tauri-apps/plugin-dialog`、`vite`。全部是宽松许可。
+- 本项目**未引入任何 GPL / AGPL 代码**，所以在你自己的产品里用这里的代码，不会被「传染」成必须开源。
+
+### 想换许可证？
+
+本仓库的提交全部由作者一人完成，**没有第三方贡献**，版权完整归作者所有 ——
+所以需要时可以整体换成别的许可证（例如以后为商业版做双授权），不必征求任何人同意。
+唯一要注意的是：**已经按 MIT 拿到的授权无法收回**，改许可证只对之后的新版本生效。
+
+> ⚠️ 顺带说明：`package.json` 里的 `"private": true` 是 **npm 的发布保险**
+> （防止误执行 `npm publish`），**与「仓库是否公开」无关**，保持不动。
