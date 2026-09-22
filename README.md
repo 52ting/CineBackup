@@ -718,6 +718,7 @@ python tools/gh_release.py publish    # 建/复用 Release 并上传全部产物
 
 ```bash
 python tools/gh_release.py status           # 看所有 Release 与资产
+python tools/gh_release.py verify           # 逐字节核对本地产物 vs 远端资产（发布后顺手跑）
 python tools/gh_release.py publish 文件...   # 只传指定文件
 python tools/gh_release.py publish --draft   # 先建草稿，自己看一眼再公开
 ```

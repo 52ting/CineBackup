@@ -11,6 +11,9 @@
     python tools/gh_release.py status
         # 列出所有 Release 及其资产
 
+    python tools/gh_release.py verify
+        # 逐字节核对本地产物与 Release 上资产的体积（发布完顺手跑一下）
+
     python tools/gh_release.py publish
         # 按 package.json 的版本号创建/复用 Release，并上传下面这些默认文件：
         #   src-tauri/target/release/bundle/nsis/CineBackup_<v>_x64-setup.exe
@@ -248,12 +251,62 @@ def cmd_publish(args) -> int:
     return 1 if failed else 0
 
 
+def cmd_verify(_args) -> int:
+    """逐字节核对本地产物与 Release 上资产的体积是否一致。
+
+    光看 API 返回的 size 有时会骗人（本地文件被截断也一样有 size），所以这里是
+    「本地 os.path.getsize」对「远端 assets[].size」两边都取，不一致就报错。
+    """
+    v = version()
+    tag = "v%s" % v
+    rel = find_release(tag)
+    if rel is None:
+        print("Release %s 不存在，先跑 publish" % tag)
+        return 1
+
+    print("Release  %s  %s" % (tag, rel["html_url"]))
+    print("draft=%s  prerelease=%s  说明 %d 字符"
+          % (rel["draft"], rel["prerelease"], len(rel.get("body") or "")))
+    print()
+
+    remote = {a["name"]: a for a in rel.get("assets", [])}
+    local = {os.path.basename(p): p for p in default_assets(v)}
+    ok = True
+    for name, path in local.items():
+        a = remote.get(name)
+        if a is None:
+            print("✗ %-42s 远端缺失" % name)
+            ok = False
+            continue
+        if not os.path.isfile(path):
+            print("✗ %-42s 本地缺失（%s）" % (name, path))
+            ok = False
+            continue
+        lsz, rsz = os.path.getsize(path), a["size"]
+        if lsz != rsz:
+            ok = False
+        print("%s %-42s 本地 %9d B  远端 %9d B"
+              % ("✓" if lsz == rsz else "✗", name, lsz, rsz))
+        print("    %s  （下载 %d 次）" % (a["browser_download_url"], a["download_count"]))
+
+    extra = sorted(set(remote) - set(local))
+    if extra:
+        print("\n远端还有额外资产（不是本地默认清单里的）：")
+        for n in extra:
+            print("  · %s  %.2f MB" % (n, remote[n]["size"] / 1048576.0))
+
+    print()
+    print("结论：", "全部逐字节一致 ✓" if ok else "存在不一致 ✗")
+    return 0 if ok else 1
+
+
 def main() -> int:
     global TOK
     ap = argparse.ArgumentParser(description="发布 CineBackup 到 GitHub Release")
     sub = ap.add_subparsers(dest="cmd")
 
     sub.add_parser("status", help="列出 Release 与资产")
+    sub.add_parser("verify", help="核对本地产物与远端资产的体积")
 
     p = sub.add_parser("publish", help="创建/复用 Release 并上传产物")
     p.add_argument("files", nargs="*", help="要上传的文件（默认用内置清单）")
@@ -272,6 +325,8 @@ def main() -> int:
     print()
     if args.cmd == "status":
         return cmd_status(args)
+    if args.cmd == "verify":
+        return cmd_verify(args)
     return cmd_publish(args)
 
 
