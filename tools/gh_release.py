@@ -155,18 +155,60 @@ def default_assets(v: str) -> list:
     ]
 
 
-def build_notes(v: str) -> str:
-    """用上一个 tag 到 HEAD 的提交记录当发布说明；没有旧 tag 就取最近 20 条。"""
-    def run(*a):
-        return subprocess.run(list(a), cwd=PROJ, capture_output=True, text=True,
-                              timeout=30).stdout.strip()
+def previous_tag(current: str):
+    """上一个已发布的 tag。
 
-    tags = run("git", "tag", "--sort=-v:refname").splitlines()
-    rng = "%s..HEAD" % tags[0] if tags else "-20"
-    log = run("git", "log", "--no-merges", "--pretty=format:- %s", rng)
+    **优先问 GitHub**：tag 可能只在远端（本次就是这么建的 —— Release 建在 GitHub 上，
+    本地 `git tag` 是空的，结果发布说明退化成了「最近 20 条提交」，把 0.4.0 以来的
+    历史全列进去了）。退而求其次才用本机 `git tag`。
+    """
+    try:
+        for r in list_releases():
+            if r["tag_name"] != current:
+                return r["tag_name"]
+    except SystemExit:
+        pass                                        # 查询失败不该挡住发布
+    tags = subprocess.run(["git", "tag", "--sort=-v:refname"], cwd=PROJ,
+                          capture_output=True, text=True, timeout=30).stdout.split()
+    for t in tags:
+        if t != current:
+            return t
+    return None
+
+
+def commits_since(prev_tag: str):
+    """用 GitHub compare API 取 prev_tag..HEAD 的提交标题。
+
+    比本地 `git log prev..HEAD` 可靠：本地没 fetch 过那个 tag 时 git 会直接报错，
+    而 compare API 只认远端的 ref。
+    """
+    st, data = _call("%s/repos/%s/%s/compare/%s...HEAD" % (API, OWNER, REPO, prev_tag))
+    if st != 200:
+        return None, None
+    lines = []
+    for c in data.get("commits", []):
+        msg = (c["commit"]["message"].splitlines() or [""])[0].strip()
+        if msg:
+            lines.append("- %s" % msg)
+    return ("\n".join(lines) or None), data.get("ahead_by")
+
+
+def build_notes(v: str, tag: str) -> str:
+    """发布说明：能算「上一版→本版」就算，算不出来就退化成最近 20 条提交。"""
+    prev = previous_tag(tag)
+    log = heading = None
+    if prev:
+        log, ahead = commits_since(prev)
+        if log:
+            heading = "### 本次变更（%s → %s，共 %s 个提交）" % (prev, tag, ahead)
+
     if not log:
-        log = "- （无提交记录）"
-    return "## CineBackup %s\n\n### 本次变更\n\n%s\n\n### 下载说明\n\n" \
+        log = subprocess.run(["git", "log", "--no-merges", "--pretty=format:- %s", "-20"],
+                             cwd=PROJ, capture_output=True, text=True,
+                             timeout=30).stdout.strip() or "- （无提交记录）"
+        heading = "### 本次变更（最近 20 条提交）"
+
+    return "## CineBackup %s\n\n%s\n\n%s\n\n### 下载说明\n\n" \
            "| 平台 | 文件 | 说明 |\n|---|---|---|\n" \
            "| Windows | `CineBackup_%s_x64-setup.exe` | 推荐，双击安装 |\n" \
            "| Windows | `CineBackup_%s_x64_en-US.msi` | 企业批量部署用 |\n" \
@@ -176,7 +218,7 @@ def build_notes(v: str) -> str:
            "> 到「系统设置 → 隐私与安全性」点「仍要打开」，或执行：\n" \
            "> `xattr -dr com.apple.quarantine /Applications/CineBackup.app`\n" \
            "> **请用 dmg 安装，不要把 .app 从产物 zip 里直接拖出来**（会丢可执行权限位）。\n" \
-           % (v, log, v, v, v, v)
+           % (v, heading, log, v, v, v, v)
 
 
 def cmd_publish(args) -> int:
@@ -198,7 +240,7 @@ def cmd_publish(args) -> int:
         payload = json.dumps({
             "tag_name": tag,
             "name": "CineBackup %s" % v,
-            "body": build_notes(v),
+            "body": build_notes(v, tag),
             "draft": bool(args.draft),
             "prerelease": bool(args.prerelease),
             "target_commitish": args.target or head,
