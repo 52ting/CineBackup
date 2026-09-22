@@ -362,12 +362,12 @@ src-tauri/target/universal-apple-darwin/release/bundle/
 
 ### 5.3 没有 Mac：用 GitHub Actions 出包（推荐）
 
-仓库：**https://github.com/52ting/CineBackup**（私有）。
+仓库：**https://github.com/52ting/CineBackup**（**公开**，源码与产物无需登录即可访问）。
 `.github/workflows/build-macos.yml` 已配好三种触发方式：
 
 | 触发 | 说明 |
 |---|---|
-| 推送到 `main` | 自动出**通用二进制**包（只改 `*.md` / `tools/**` 等不参与构建的文件的提交不触发，省额度） |
+| 推送到 `main` | 自动出**通用二进制**包（只改 `*.md` / `tools/**` 等不参与构建的文件的提交不触发，省得白等 9 分钟） |
 | 推 `v*` tag（如 `v0.4.0`） | 自动出通用二进制包；tag 推送不受 paths 过滤影响，一定会跑 |
 | Actions 页面 **Run workflow** | 手动触发，`universal` 勾掉则只打本机架构（省一半时间） |
 
@@ -377,8 +377,10 @@ src-tauri/target/universal-apple-darwin/release/bundle/
 
 > ⚠️ **装的时候用 dmg，不要直接把 zip 里那个 `.app` 拖出来** —— GitHub 产物打包会丢掉
 > 可执行权限位，拖出来的 App 可能起不来；dmg 内部的权限是完整的。
-> ⚠️ **私有仓库的 macOS runner 按 10 倍扣免费额度**（2000 分钟/月 ≈ 22 次通用构建），
-> 所以纯文档改动不会触发构建。要出 Windows 安装包仍走第 6 节的本机打包。
+> ℹ️ 仓库已转为**公开**，公开仓库的标准 runner（**含 macOS**）用量**完全免费、不计费**，
+> 之前「私有仓库 macOS 10 倍扣额度、约 22 次/月」的压力没有了。
+> 不过 `paths-ignore` 仍然保留 —— 纯文档 / 工具脚本的改动不该白跑一次 9 分钟的构建。
+> 要出 Windows 安装包仍走第 6 节的本机打包。
 
 **在 Windows 上查构建状态 / 下载产物**（不必开浏览器，也不用建 PAT）：
 本机 Git for Windows 的 Credential Manager 已存有推送时的授权，`tools/watch_ci.py`
@@ -747,10 +749,17 @@ python tools/gh_release.py publish --draft   # 先建草稿，自己看一眼再
 
 ### 13.3 注意事项
 
-- ⚠️ 仓库是**私有**的，别人要下载 Release 资产**必须登录 GitHub 并拿到仓库权限**，
-  不存在「发个链接就能给客户下载」这回事。要给外部用户分发，得先让仓库公开，或改用别的网盘。
-- ⚠️ 打 tag 会触发 `build-macos.yml`（**tag 推送不受 `paths-ignore` 影响**），
-  所以发布一次会消耗一次 macOS 额度。
+- ✅ 仓库是**公开**的，Release 资产**无需登录即可下载**，链接可以直接发给用户：
+  `https://github.com/52ting/CineBackup/releases/latest`（永远指向最新一版）。
+  已实测：不带任何凭据请求四个资产的 `browser_download_url`，均返回 **HTTP 206**。
+- 🔒 已开启 **secret scanning + push protection**（公开仓库的第一道闸）：推送里若含
+  已知形态的凭据会被 GitHub 直接拦下。`dependabot_security_updates` 仍是关的，
+  需要 Dependabot 告警时才去 Settings → Code security 打开。
+- ⚠️ 公开之后 **git 历史对全网可见**，以后提交前留意别把密钥写进代码
+  （本仓库转公开前已扫过全部 76 个已跟踪文件，无密钥、无私钥、无 `.env`）。
+- ⚠️ 打 tag 会触发 `build-macos.yml`（**tag 推送不受 `paths-ignore` 影响**，一定会跑）。
+  公开仓库下这不再花钱，只是多等约 9 分钟——所以发布时先等 Windows 产物齐了再建 Release，
+  免得白跑一轮。
 - ⚠️ `.github/workflows/build-macos.yml` 的 `paths-ignore` 已含 `**.md`、`tools/**`、
   `cinebackup-builds/**` —— CI 的构建步骤全是内联的、不调用 `tools/` 里的任何脚本，
   所以改工具不会重出包。**但如果以后让 CI 去调某个 `tools/` 脚本，记得把它从忽略列表里拿掉。**
