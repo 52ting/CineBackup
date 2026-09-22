@@ -22,6 +22,10 @@ Thumbs.db
 *.log
 *.tmp
 
+# ---- Python（tools/ 下的脚本跑一次就会生成）----
+__pycache__/
+*.pyc
+
 # ---- 任务文件（个人路径，不入库）----
 task-*.json
 *.cinebackup.json
