@@ -367,7 +367,7 @@ src-tauri/target/universal-apple-darwin/release/bundle/
 
 | 触发 | 说明 |
 |---|---|
-| 推送到 `main` | 自动出**通用二进制**包（只改 `*.md` 等文档的提交不触发，省额度） |
+| 推送到 `main` | 自动出**通用二进制**包（只改 `*.md` / `tools/**` 等不参与构建的文件的提交不触发，省额度） |
 | 推 `v*` tag（如 `v0.4.0`） | 自动出通用二进制包；tag 推送不受 paths 过滤影响，一定会跑 |
 | Actions 页面 **Run workflow** | 手动触发，`universal` 勾掉则只打本机架构（省一半时间） |
 
@@ -697,3 +697,61 @@ FAT32 单文件上限 4 GB，DCP/ProRes 请换 exFAT 或 NTFS。
 ## 十二、明确不实现（按需求）
 
 MHL 文件生成、双盘同时并行备份、磁盘挂载监听、自动弹出硬盘、代码签名公证、多语言。
+
+---
+
+## 十三、发布安装包到 GitHub Release
+
+当前线上版本：**https://github.com/52ting/CineBackup/releases/tag/v0.4.2**
+
+### 13.1 一条命令发布
+
+三样产物都准备好之后（Windows 走第 6 节、dmg 走第 5.3 节、源码包见下），
+
+```bash
+python tools/make_src_zip.py          # 生成 cinebackup-<版本>-src.zip（版本号读 package.json）
+python tools/gh_release.py publish    # 建/复用 Release 并上传全部产物
+```
+
+脚本会按 `package.json` 的版本号建 tag `v<版本>`，Release 名 `CineBackup <版本>`，
+发布说明自动取「上一个 tag → HEAD」的提交记录拼出来。
+
+```bash
+python tools/gh_release.py status           # 看所有 Release 与资产
+python tools/gh_release.py publish 文件...   # 只传指定文件
+python tools/gh_release.py publish --draft   # 先建草稿，自己看一眼再公开
+```
+
+默认上传这四个（缺哪个会直接报错，不会静默跳过）：
+
+| 文件 | 来源 |
+|---|---|
+| `CineBackup_<版本>_x64-setup.exe` | Windows 第 6 节 `tauri build`（NSIS，推荐给用户） |
+| `CineBackup_<版本>_x64_en-US.msi` | 同上（MSI，企业批量部署） |
+| `CineBackup_<版本>_universal.dmg` | 第 5.3 节 GitHub Actions 产物，`watch_ci.py` 会自动下载到 `cinebackup-builds/` |
+| `cinebackup-<版本>-src.zip` | `python tools/make_src_zip.py` |
+
+**幂等**：已存在且大小一致的同名资产会跳过；大小不同则先删旧的再传。重复执行不会污染 Release。
+
+### 13.2 为什么不用 `gh` CLI 或 GitHub 连接器
+
+- **本机没装 `gh`**（`gh: command not found`），也不想去装。
+- **GitHub 连接器是 App 令牌，做不了这件事**：它的 `push_files` 要求把文件内容**内联进工具参数**，
+  几 MB 的二进制走一遍上下文不可行；而且连接器根本没有「上传 Release 资产」这个能力。
+
+所以脚本走 REST API：建 Release 打 `POST /repos/{owner}/{repo}/releases`，
+传资产打 `POST https://uploads.github.com/repos/{owner}/{repo}/releases/{id}/assets?name=...`。
+凭据复用本机 Git Credential Manager 里推送时存下的授权
+（和 `tools/watch_ci.py` 同一套），**只在内存里用，不打印、不落盘**。
+
+### 13.3 注意事项
+
+- ⚠️ 仓库是**私有**的，别人要下载 Release 资产**必须登录 GitHub 并拿到仓库权限**，
+  不存在「发个链接就能给客户下载」这回事。要给外部用户分发，得先让仓库公开，或改用别的网盘。
+- ⚠️ 打 tag 会触发 `build-macos.yml`（**tag 推送不受 `paths-ignore` 影响**），
+  所以发布一次会消耗一次 macOS 额度。
+- ⚠️ `.github/workflows/build-macos.yml` 的 `paths-ignore` 已含 `**.md`、`tools/**`、
+  `cinebackup-builds/**` —— CI 的构建步骤全是内联的、不调用 `tools/` 里的任何脚本，
+  所以改工具不会重出包。**但如果以后让 CI 去调某个 `tools/` 脚本，记得把它从忽略列表里拿掉。**
+- macOS 包未签名，用户首次打开需要「仍要打开」或
+  `xattr -dr com.apple.quarantine /Applications/CineBackup.app`（Release 说明里已写明）。

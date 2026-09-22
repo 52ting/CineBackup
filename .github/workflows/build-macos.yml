@@ -17,13 +17,19 @@ on:
       - main
     tags:
       - "v*"
-    # 只改文档的提交不触发构建（私有仓库的 macOS runner 按 10 倍扣额度，省着用）。
+    # 只改文档 / 工具脚本的提交不触发构建（私有仓库的 macOS runner 按 10 倍扣额度，省着用）。
     # 注意：推 tag 时 GitHub 不评估 paths 过滤，所以打 tag 一定会出包。
+    #
+    # tools/** 之所以能忽略：本工作流的构建步骤全部是内联的（npm ci + npm run tauri build），
+    # 不调用 tools/ 下的任何脚本（build_macos.sh 只是给本机 Mac 手动打包用的）。
+    # ⚠️ 以后如果让 CI 去调某个 tools/ 脚本，必须把它的路径从下面删掉，否则会静默不触发。
     paths-ignore:
       - "**.md"
       - ".gitignore"
       - ".gitattributes"
       - "LICENSE"
+      - "tools/**"
+      - "cinebackup-builds/**"
 
 jobs:
   build:
