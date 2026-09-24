@@ -751,7 +751,8 @@ MHL 文件生成、双盘同时并行备份、磁盘挂载监听、自动弹出�
 
 ## 十三、发布安装包到 GitHub Release
 
-当前线上版本：**https://github.com/52ting/CineBackup/releases/tag/v0.4.2**
+当前线上版本：**https://github.com/52ting/CineBackup/releases/tag/v0.4.3**
+（无需登录即可下载：`https://github.com/52ting/CineBackup/releases/latest`）
 
 ### 13.1 一条命令发布
 
