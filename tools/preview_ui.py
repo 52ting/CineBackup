@@ -218,6 +218,77 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     }, 2600);
   }
 
+  // ?verify=1 → 「校验阶段进行中」。重点核对底部那三行读数：
+  // 大任务上总百分比动得极慢（667 GB 里 1% 就是 6.7 GB），所以
+  //   ① 百分比在 10% 以下给两位小数；
+  //   ② 补上「当前文件」自己的百分比与字节数（后端一直在发，之前前端没显示）。
+  // 数字直接取自用户真机截图（macOS，需写入 334 GB → 校验要读 667 GB）。
+  if (qs.has("verify")) {
+    const VBIG = 716251971584; // 667 GB
+    setTimeout(function () {
+      window.__cbEmit("cb:status", { status: "verifying" });
+      window.__cbEmit("cb:plan", {
+        copy: 263, resume: 0, skip: 0, overwrite: 0, conflict: 0,
+        totalBytes: 358587598080, filtered: 0,
+      });
+      // 先给一条拷贝阶段的「按源」进度：用自动演示里加进来的那 3 个源，
+      // 否则它们会停在中栏显示成「排队中」（预览脚本的 mock 数据所致）。
+      // 路径必须和 mock 磁盘发现出来的完全一致，才会就地更新而不是多出几行。
+      window.__cbEmit("cb:progress", {
+        phase: "copy", filesTotal: 263, filesDone: 263,
+        bytesTotal: VBIG, bytesDone: VBIG, speedBps: 0, etaSecs: 0,
+        currentFile: "", currentFileDone: 0, currentFileTotal: 0,
+        elapsedSecs: 3720,
+        sources: [
+          { index: 0, path: "D:\\\\拍摄素材\\\\《山海》A001_20260901",
+            bytesTotal: 322122547200, bytesDone: 322122547200,
+            filesTotal: 131, filesDone: 131, state: "done", currentFile: "" },
+          { index: 1, path: "E:\\\\DIT\\\\R3D_RAW\\\\Day03",
+            bytesTotal: 34896609280, bytesDone: 34896609280,
+            filesTotal: 132, filesDone: 132, state: "done", currentFile: "" },
+          { index: 2, path: "Z:\\\\DCP\\\\shanhai_final_dcp.zip",
+            bytesTotal: 26843545600, bytesDone: 26843545600,
+            filesTotal: 1, filesDone: 1, state: "done", currentFile: "" },
+        ],
+      });
+      const VCUR =
+        "/Volumes/Tiger/2024_9_17 中秋节民宿施工/Cam A/A153C001_240917LR.MP4";
+      const VFILE_TOTAL = 2480349248; // 2.31 GB
+      let n = 0;
+      const pushV = function () {
+        window.__cbEmit("cb:progress", {
+          phase: "verify", filesTotal: 263, filesDone: 1 + n,
+          bytesTotal: VBIG, bytesDone: 4966055936 + n * 805306368,
+          speedBps: 67829760, etaSecs: 10440 - n * 3,
+          currentFile: VCUR,
+          currentFileDone: 1073741824 + n * 134217728,
+          currentFileTotal: VFILE_TOTAL, elapsedSecs: 76 + n * 2,
+          sources: [],
+        });
+        n++;
+      };
+      pushV();
+      setInterval(pushV, 900);
+      // 校验结果表也跟着涨两条，和截图一致
+      const VH = "a63c4888d15ecd31b1b6b1a7b6b1a7b6b1a7b6b1a7b6b1a7b6b1a7b6b1a7b6b1";
+      setTimeout(function () {
+        window.__cbEmit("cb:file-result", {
+          path: VCUR, target: "/Volumes/2024 《老虎的斑纹》/" + VCUR.split("/").pop(),
+          size: VFILE_TOTAL, status: "pass", srcHash: VH, dstHash: VH,
+          message: "SHA-256 校验一致",
+        });
+      }, 1200);
+      setTimeout(function () {
+        window.__cbEmit("cb:file-result", {
+          path: "/Volumes/Tiger/2024_9_17 中秋节民宿施工/Cam A/A153C001_240917LRM01.XML",
+          target: "/Volumes/2024 《老虎的斑纹》/A153C001_240917LRM01.XML",
+          size: 2201170739, status: "pass", srcHash: VH, dstHash: VH,
+          message: "SHA-256 校验一致",
+        });
+      }, 1500);
+    }, 2600);
+  }
+
   // ?dnd=1&x=960&y=300 → 自动进入拖拽悬停态，好截拖拽遮罩
   // 再加 &drop=1 → 2.4s 后真的「松手」，验证落点判定（右栏应设为目标、左栏应加源）
   if (qs.has("dnd")) {
@@ -439,8 +510,8 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     cards()[2]?.click();
     await sleep(170);
     menuBtn("target")?.click();
-    // ?run=1 / ?scan=1 → 再按下「开始备份」，界面就会切到传输视图
-    if (qs.has("run") || qs.has("scan")) {
+    // ?run=1 / ?scan=1 / ?verify=1 → 再按下「开始备份」，界面就会切到传输视图
+    if (qs.has("run") || qs.has("scan") || qs.has("verify")) {
       await sleep(220);
       document.getElementById("btnStart")?.click();
       // ?fold=1 → 运行中再点中栏箭头，应折回磁盘视图（验证箭头能来回切）
@@ -650,6 +721,11 @@ def main():
         help="截「预扫描进行中」态：中栏应显示「正在扫描…/预扫描中…」而不是整列「排队中」",
     )
     ap.add_argument(
+        "--verify",
+        action="store_true",
+        help="截「校验阶段进行中」态：核对底部百分比精度与「当前文件」进度（大任务上总百分比动得很慢）",
+    )
+    ap.add_argument(
         "--opts",
         action="store_true",
         help="打开「任务选项」下拉（核对校验算法选择器）",
@@ -672,6 +748,8 @@ def main():
             name += "-run"
         if args.scan:
             name += "-scan"
+        if args.verify:
+            name += "-verify"
         if args.queuetest:
             name += "-queuetest"
         if args.fold:
@@ -695,6 +773,9 @@ def main():
             parts.append("fold=1")
     if args.scan:
         parts.append("scan=1")
+    if args.verify:
+        parts.append("verify=1")
+        args.run = True  # 复用「运行中」的数据铺垫，界面才会切到传输视图
     if args.opts:
         parts.append("opts=1")
     if args.probe or args.queuetest:

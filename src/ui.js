@@ -394,13 +394,29 @@ export function renderProgress(p) {
 
   $("phaseText").textContent =
     p.phase === "verify" ? "校验阶段" : p.phase === "scan" ? "预扫描" : "拷贝阶段";
-  $("progressPct").textContent = `${pct.toFixed(1)}%`;
+  // 总进度可能是几百 GB：667 GB 上 1% 就是 6.7 GB，一位小数会几十秒才动一下。
+  // 10% 以下多给一位，让「确实在动」看得出来。
+  $("progressPct").textContent = pct < 10 ? `${pct.toFixed(2)}%` : `${pct.toFixed(1)}%`;
   $("progressBytes").textContent = `${fmtBytes(done)} / ${fmtBytes(total)}`;
   $("progressSpeed").textContent = fmtSpeed(p.speedBps);
   $("progressEta").textContent = `预计剩余：${fmtDuration(p.etaSecs)}`;
-  $("curFile").textContent = p.currentFile
-    ? `${p.filesDone}/${p.filesTotal}  ${p.currentFile}`
-    : `${p.filesDone}/${p.filesTotal}`;
+
+  // 当前文件的进度。总量几百 GB 时，总百分比动得太慢，这一项才是「活着」的读数
+  // （后端一直在发 currentFileDone / currentFileTotal，之前前端没显示）。
+  const ft = p.currentFileTotal || 0;
+  const fd = p.currentFileDone || 0;
+  const filePart =
+    ft > 0
+      ? ` · 当前文件 ${Math.min(100, (fd / ft) * 100).toFixed(0)}%（${fmtBytes(fd)} / ${fmtBytes(ft)}）`
+      : "";
+  if (p.currentFile) {
+    $("curFile").textContent = `${p.filesDone}/${p.filesTotal}${filePart} · ${p.currentFile}`;
+  } else if (p.filesTotal) {
+    $("curFile").textContent = `${p.filesDone}/${p.filesTotal}`;
+  } else {
+    // 阶段收尾的事件不带文件名（拷贝阶段结束时就是这样），别显示成 0/0
+    $("curFile").textContent = "—";
+  }
 }
 
 export function resetProgress() {

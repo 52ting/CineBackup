@@ -446,7 +446,7 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 .progress-meta .phase { margin-left: auto; color: var(--text-mute); }
 .cur-file {
   color: var(--text-mute); font-family: var(--mono); font-size: 10.5px;
-  word-break: break-all; margin-top: 4px; max-height: 30px; overflow: hidden;
+  word-break: break-all; margin-top: 4px; max-height: 46px; overflow: hidden;
 }
 
 .task-bar {

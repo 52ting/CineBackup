@@ -47,7 +47,8 @@ cinebackup/
     ├── tauri.conf.json          # 窗口 / 打包配置
     ├── capabilities/default.json# 权限声明（核心 + 文件对话框）
     ├── tests/
-    │   └── resume_rule.rs       # ★ 断点续传规则的端到端测试（真实文件落盘）
+    │   ├── resume_rule.rs       # ★ 断点续传规则的端到端测试（真实文件落盘）
+    │   └── verify_progress.rs   # ★ 校验阶段的进度上报频率（边读边发 / 边界不丢）
     └── src/
         ├── main.rs              # 二进制入口
         ├── lib.rs               # 模块声明 + Tauri Builder
@@ -187,7 +188,7 @@ Tauri 会接管 webview 的原生拖放，通过 `tauri://drag-*` 事件把**绝
 | 项目 | 结果 |
 |---|---|
 | `cargo check --all-targets` | ✅ 0 error 0 warning |
-| `cargo test` | ✅ 31 passed / 0 failed（16 单元 + 15 集成） |
+| `cargo test` | ✅ 33 passed / 0 failed（16 单元 + 15 续传 + 2 校验进度） |
 | `vite build` | ✅ 产出 `dist/` |
 | `npm run tauri build` | ✅ 产出 MSI + NSIS 两个安装包（见 6.3） |
 | 磁盘自动拉取 | ✅ 实机检测到 7 个卷（含 3 个映射网络盘），容量/只读标志正确 |
@@ -198,7 +199,8 @@ Tauri 会接管 webview 的原生拖放，通过 `tauri://drag-*` 事件把**绝
 
 ```bash
 cd src-tauri
-cargo test --test resume_rule -- --nocapture
+cargo test --test resume_rule -- --nocapture     # 断点续传 15 条
+cargo test --test verify_progress -- --nocapture # 校验阶段的进度上报 2 条
 ```
 
 > 测试里的文件都是真实落盘的（在系统临时目录），不是 mock。
@@ -264,6 +266,7 @@ python tools/preview_ui.py --serve         # 或者起 http://127.0.0.1:8765 自
 | `--theme dark` / `--theme light` | 强行走 `?theme=` 对应的配色（默认跟随系统） |
 | `--run` | 模拟点「开始备份」：发状态 / 计划 / 进度事件，中栏切成传输列表 |
 | `--scan` | 模拟**预扫描进行中**：中栏当前那行显示流动滑块 + 正在扫描的文件名，其余「预扫描中…」 |
+| `--verify` | 模拟**校验阶段进行中**：核对底部百分比精度与「当前文件」进度（数字取自真机截图：667 GB / 64 MB/s） |
 | `--run --fold` | 接着再点一次中栏箭头，截「运行中切回磁盘视图」的样子 |
 | `--dnd --dnd-x N --dnd-y N` | 模拟拖拽悬停，核对高亮框与命中判定（左栏 ≈300、右栏 ≈1150） |
 | `--dnd --drop` | 悬停 0.9 秒后真的松手投递一次，用来验证「落点到底判给了哪一侧」 |
@@ -276,6 +279,7 @@ python tools/preview_ui.py --shot --theme dark --run       # tools/ui-preview-ru
 python tools/preview_ui.py --shot --theme light            # tools/ui-preview-light.png
 python tools/preview_ui.py --shot --run --fold             # tools/ui-preview-run-fold-light.png
 python tools/preview_ui.py --shot --scan --theme dark      # tools/ui-preview-scan-dark.png
+python tools/preview_ui.py --shot --verify                 # tools/ui-preview-verify-light.png
 python tools/preview_ui.py --shot --dnd --drop --dnd-x 1150  # 右栏松手 → 应设为目标
 python tools/preview_ui.py --shot --run --dnd --drop --dnd-x 300  # 运行中拖入左栏 → 应自动排队
 python tools/preview_ui.py --probe                         # 追加轮只补新源（打印 verdict 判定）
@@ -717,6 +721,34 @@ python tools\setup_bundler_tools.py nsis     # 只装 NSIS
 
 > 老版本的任务 JSON 没有这个字段，加载时按 SHA-256 补齐（`#[serde(default)]`），不会报错。
 
+### 校验阶段的进度是怎么上报的（0.4.5 修）
+
+校验一个文件要读**源 + 目标两遍**，所以「当前文件」的总量是 `size × 2`。
+这里的进度**必须在读取块的回调里发**（和拷贝阶段同一个套路），不能等一个文件读完再发：
+
+- 2 GB 的素材按 64 MB/s 要读 60 秒以上。只在文件末尾发一次 → 界面静默一分钟，
+  看起来就是「进度条不动了 / 卡死了」。
+- 文件收尾那次上报**不能用节流窗口判定**，必须强制发：小文件几百毫秒能连着读完好几个，
+  走节流的话它们的进度会被整段吞掉 —— 表现是「结果表在涨、进度条不动」。
+
+两条约定各有一条回归测试钉住（`src-tauri/tests/verify_progress.rs`）：
+
+```
+t14_verify_reports_progress_while_reading_a_big_file   # 边读边发，存在中间态
+t15_every_file_boundary_forces_a_progress_report       # 每个文件边界一条不缺
+```
+
+> 这两条测试**能把旧写法测红**（改回「循环末尾发一次」后：8 MiB 文件只上报 1 条而不是 5 条；
+> 10 个小文件只上报 2 条、`files_done` 只覆盖 `{1, 10}` —— 中间 8 个文件一条进度都没有）。
+
+界面上对应的三处读数（`src/ui.js::renderProgress`）：
+
+| 位置 | 含义 |
+|---|---|
+| `1.03%` | **总**进度。总量几百 GB 时 1% 就是好几 GB，所以 10% 以下给两位小数，否则几十秒才动一下 |
+| `6.88 GB / 667 GB` | 总字节数（源 + 目标累计） |
+| `4/263 · 当前文件 60%（1.38 GB / 2.31 GB） · <路径>` | 当前文件自己的进度 —— 大任务上这才是「活着」的那个读数 |
+
 **额外安全设计（可选开关「续传前校验已写入部分」，默认开启）**：
 真正的断点续传最怕「上次中断在 4 MiB 块中间」，此时目标文件末尾若干 KB 是半截数据。
 开启后，续传前先比对**源文件前 N 字节**与**目标文件已有内容**的哈希：
@@ -807,6 +839,21 @@ FAT32 单文件上限 4 GB，DCP/ProRes 请换 exFAT 或 NTFS。
 
 **Q：能在备份完成后删除源文件吗？**
 本工具**只读源、只写目标**，绝不删除任何源文件。
+
+**Q：校验时底下的进度条好像不动？**
+先看**速度**那一栏（它比百分比灵敏得多）：
+
+- 总量几百 GB 时，总百分比 1% 就是好几 GB —— 667 GB 的校验里 1% ≈ 6.7 GB，
+  按 64 MB/s 要**一分半**才跳一次。所以百分比本身动得慢是正常的，
+  现在 10% 以下给两位小数，并且额外显示「当前文件」自己的百分比与字节数。
+- 速度只有 ~11 MB/s：素材在**网络盘**上（实测某台 SMB 共享单流就是 11 MB/s，
+  开两条流能到 21 MB/s）—— 瓶颈是链路不是软件，修网络比改代码划算得多。
+- 速度 ~200 MB/s：本地盘，这就是物理账 —— 校验要读「源 + 目标」两遍，
+  600 GB 的数据要读 1200 GB，一小时跑不完是预期。读盘量的完整账见第七节
+  「『跳过』不是免费的」那一节。
+
+⚠️ 一个容易误判的点：**单个大文件时左上角的文件计数会一直停在 `0/1`**
+（要整个文件读完才 +1），看着像卡住。以**字节数 / 当前文件百分比 / 速度**为准。
 
 ---
 
