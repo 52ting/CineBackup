@@ -230,6 +230,110 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     }
   }
 
+  // ?queuetest=1 → 回归场景：运行中往左栏加源 → 本轮 job-end 后应自动再跑一轮。
+  // 与 ?run=1&dnd=1&drop=1&x=300&y=300 组合使用；结果写进 <pre id="probeOut">，
+  // 由 `preview_ui.py --probe`（chrome --dump-dom）取回，不截图。
+  //
+  // 记录每次 start_job 的 sources，就能回答关键问题：
+  //   ① 第二轮到底有没有发出去？  ② 发出去的那轮带没带上新加的源？
+  if (qs.has("queuetest")) {
+    const calls = [];
+    const rawInvoke = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = function (cmd, args) {
+      if (cmd === "start_job") {
+        calls.push({
+          n: calls.length + 1,
+          tMs: Math.round(performance.now()),
+          sources: ((args || {}).req || {}).sources || [],
+          dryRun: !!(args || {}).req && !!(args || {}).req.dryRun,
+        });
+      }
+      return rawInvoke.apply(this, arguments);
+    };
+
+    const btns = () => document.getElementById("btnStart");
+    const rowSnap = () =>
+      Array.from(document.querySelectorAll("#transferList .transfer")).map((e) => ({
+        name: (e.querySelector(".tr-src") || {}).textContent || "",
+        state: e.dataset.state,
+      }));
+    // 日志面板里的时间戳是真实时钟，跨运行时无意义，只留级别+正文
+    const logLines = () =>
+      Array.from(document.querySelectorAll("#logBox .line")).map((e) =>
+        e.textContent.replace(/^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/, "").trim()
+      );
+
+    const dump = () => {
+      if (document.getElementById("probeOut")) return;
+      // 断言：运行中加源后排的那一轮，应「只带新加的源」。
+      // 带上老源的话，预扫描要把上一轮刚写完的内容（源+目标）各再读一遍 —— 素材盘上就是几小时空转。
+      const first = calls[0] ? calls[0].sources : [];
+      const second = calls[1] ? calls[1].sources : [];
+      const pre = document.createElement("pre");
+      pre.id = "probeOut";
+      pre.textContent = JSON.stringify(
+        {
+          startCallCount: calls.length,
+          startCalls: calls,
+          verdict: {
+            第二轮是否发出: calls.length >= 2,
+            第二轮源个数: second.length,
+            第二轮是否只含新源:
+              second.length > 0 && second.every((p) => !first.includes(p)),
+          },
+          btnText: btns() ? btns().textContent : "(无按钮)",
+          btnQueued: btns() ? btns().classList.contains("queued") : null,
+          srcCount: (document.getElementById("srcCount") || {}).textContent,
+          rows: rowSnap(),
+          warnOrErrLogs: logLines().filter((l) => /失败|错误|取消|中止/.test(l)),
+          tailLogs: logLines().slice(-14),
+        },
+        null,
+        2
+      );
+      document.body.appendChild(pre);
+      document.title = "PROBE_DONE";
+    };
+
+    // 6s：模拟本轮任务跑完（注意 elapsedSecs 必须有值，否则前端 toFixed 会抛错）
+    setTimeout(() => {
+      window.__cbEmit("cb:job-end", {
+        ok: true, message: "", copied: 12, resumed: 0, overwritten: 0, skipped: 3,
+        pass: 12, failed: 0, totalBytes: 123456789, elapsedSecs: 3.5,
+        aborted: false, dryRun: false,
+      });
+    }, 6000);
+    // 9s：第二轮（500ms 延时 + 起跑）早该开始了，抓状态
+    setTimeout(dump, 9000);
+  }
+
+
+  // ?scan=1 → 预扫描进行中：中栏每行不该显示「排队中」，而是
+  // 当前那行「正在扫描…」+ 流动条纹，其余「预扫描中…」。
+  // （0.4.3 之前这段时间整列都是「排队中」，用户误以为卡死了。）
+  if (qs.has("scan")) {
+    const SCAN_CUR = [
+      "E:\\\\DIT\\\\R3D_RAW\\\\Day03\\\\A003_C012_0712AB.R3D",
+      "E:\\\\DIT\\\\R3D_RAW\\\\Day03\\\\A007_C021_0755EF.R3D",
+      "Z:\\\\DCP\\\\shanhai_final_dcp.zip",
+      "D:\\\\拍摄素材\\\\《山海》A001_20260901\\\\A001_C002_0702AC.R3D",
+    ];
+    setTimeout(function () {
+      window.__cbEmit("cb:status", { status: "scanning" });
+      let n = 0;
+      const pushScan = function () {
+        window.__cbEmit("cb:scan", {
+          phase: "check", filesSeen: 1380 + n * 12, dirsSeen: 96,
+          checked: 240 + n * 12, total: 1386,
+          bytesHashed: 15032385536 + n * 1073741824,
+          current: SCAN_CUR[n % SCAN_CUR.length],
+        });
+        n++;
+      };
+      pushScan();
+      setInterval(pushScan, 700);
+    }, 400);
+  }
 
   // 自动演一遍：挑三个源、选一个目标，好让截图是有内容的状态
   // （?run=1 时同样先铺数据，否则左栏空着、传输列表里的「目标」也没有名字）
@@ -249,8 +353,8 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     cards()[2]?.click();
     await sleep(170);
     menuBtn("target")?.click();
-    // ?run=1 → 再按下「开始备份」，界面就会切到传输视图
-    if (qs.has("run")) {
+    // ?run=1 / ?scan=1 → 再按下「开始备份」，界面就会切到传输视图
+    if (qs.has("run") || qs.has("scan")) {
       await sleep(220);
       document.getElementById("btnStart")?.click();
       // ?fold=1 → 运行中再点中栏箭头，应折回磁盘视图（验证箭头能来回切）
@@ -370,10 +474,48 @@ def shot(out, width=1560, height=1000, wait_ms=6000, query=""):
         sys.exit("截图失败")
 
 
+def probe(query="", wait_ms=11000):
+    """跑一个带断言的场景，把页面里 <pre id="probeOut"> 的内容打出来（不截图）。
+
+    比截图更硬：截图只能看「长什么样」，probe 能回答「某个动作之后到底发生了什么」
+    ——例如「运行中加源，本轮结束后有没有真的再发一个 start_job，带没带上新源」。
+    """
+    import html as _html
+    import re
+
+    chrome = find_chrome()
+    profile = tempfile.mkdtemp(prefix="cb-preview-")
+    cmd = [
+        chrome,
+        "--headless=new",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--force-device-scale-factor=1",
+        "--window-size=1280,880",
+        f"--virtual-time-budget={wait_ms}",
+        f"--user-data-dir={profile}",
+        "--dump-dom",
+        f"http://127.0.0.1:{PORT}/{query}",
+    ]
+    r = subprocess.run(cmd, capture_output=True)
+    shutil.rmtree(profile, ignore_errors=True)
+    dom = r.stdout.decode("utf-8", "replace")
+    m = re.search(r'<pre id="probeOut">(.*?)</pre>', dom, re.S)
+    if not m:
+        print(dom[-2500:])
+        sys.exit("页面里没有 #probeOut —— 场景没跑起来（看上面 DOM 尾部）")
+    print(_html.unescape(m.group(1)))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--serve", action="store_true")
     ap.add_argument("--shot", action="store_true")
+    ap.add_argument(
+        "--probe",
+        action="store_true",
+        help="跑 ?queuetest=1 回归场景并打印 #probeOut（自动带上 run/dnd/drop，不截图）",
+    )
     ap.add_argument("--out", default="")
     ap.add_argument("--width", type=int, default=1560)
     ap.add_argument("--height", type=int, default=1000)
@@ -406,11 +548,20 @@ def main():
         help="截「任务运行中」态：中栏折叠磁盘、换成每个源一条的传输列表",
     )
     ap.add_argument(
+        "--scan",
+        action="store_true",
+        help="截「预扫描进行中」态：中栏应显示「正在扫描…/预扫描中…」而不是整列「排队中」",
+    )
+    ap.add_argument(
         "--opts",
         action="store_true",
         help="打开「任务选项」下拉（核对校验算法选择器）",
     )
     args = ap.parse_args()
+
+    if args.probe:
+        # 回归场景固定需要：运行中 + 往左栏拖一次（新源）+ 排队探针
+        args.run = args.dnd = args.drop = True
 
     if args.out:
         out = args.out
@@ -422,6 +573,8 @@ def main():
             name += "-drop"
         if args.run:
             name += "-run"
+        if args.scan:
+            name += "-scan"
         if args.fold:
             name += "-fold"
         if args.opts:
@@ -441,12 +594,20 @@ def main():
         parts.append("run=1")
         if args.fold:
             parts.append("fold=1")
+    if args.scan:
+        parts.append("scan=1")
     if args.opts:
         parts.append("opts=1")
+    if args.probe:
+        parts.append("queuetest=1")
     query = "?" + "&".join(parts) if parts else ""
 
     build()
-    if args.shot:
+    if args.probe:
+        serve_bg()
+        time.sleep(0.7)
+        probe(query=query)
+    elif args.shot:
         serve_bg()
         time.sleep(0.7)
         shot(out, args.width, args.height, query=query)

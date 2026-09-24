@@ -506,3 +506,136 @@ fn t12_sha256_is_default_and_switchable() {
     let _ = fs::remove_dir_all(&d);
     println!("\n  ✓ 默认 SHA-256，可切 xxHash64\n");
 }
+
+// ---------------------------------------------------------------- 运行中加源：第二轮的真实代价
+
+/// 复刻 `engine::run_copy_phase` 的核心动作：建目录 + 按 action 落盘。
+/// 用来验证「同一种计划是不是真能落地」，不涉及事件/UI。
+fn exec_plan(plan: &scan::Plan, cancel: &AtomicBool) {
+    for d in &plan.dirs {
+        fs::create_dir_all(d).unwrap();
+    }
+    for it in &plan.items {
+        if it.action == PlannedAction::Skip {
+            continue;
+        }
+        if let Some(parent) = Path::new(&it.dst).parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let mode = match it.action {
+            PlannedAction::Resume => CopyMode::Resume,
+            PlannedAction::Overwrite => CopyMode::Overwrite,
+            _ => CopyMode::Fresh,
+        };
+        copy::copy_file(
+            Path::new(&it.src),
+            Path::new(&it.dst),
+            mode,
+            cancel,
+            &mut |_| true,
+        )
+        .unwrap_or_else(|e| panic!("拷贝 {} 失败：{e}", it.src));
+    }
+}
+
+/// **「运行中加源」界面卡在「排队中」的根因**。
+///
+/// 规则「目标已存在且大小相同 → 内容哈希判定跳过」意味着 `files_identical`
+/// 要把**源和目标各完整读一遍**（见 hash.rs：同一个 on_bytes 计数器累加两个文件）。
+///
+/// - 第一轮：目标为空 → 全是 Copy，预扫描**一个字节都不用读**；
+/// - 第二轮（排队的那轮）：上一轮刚拷完的文件现在都存在且大小相同 → **每个都要读 2 份**。
+///
+/// 所以源盘越大，第二轮在动新素材之前要空转越久（源盘 1 TB ≈ 读 2 TB）。
+/// 界面上中栏的行是 `enterTransfers()` 铺的 `waiting` 占位行，预扫描阶段只有
+/// SCAN 事件、没有 PROGRESS 事件 → 所有行一直显示「排队中」，看着就像没在干活。
+#[test]
+fn t13_second_round_rereads_everything_already_copied() {
+    let d = tmpdir("t13");
+    let target = d.join("out");
+    fs::create_dir_all(&target).unwrap();
+
+    // 第一轮就已经备好的源（三个文件，含一个子目录里的）
+    let old_dir = d.join("srcOld");
+    let mut old_total: u64 = 0;
+    for (name, len) in [
+        ("a.bin", 4 * 1024 * 1024usize),
+        ("b.bin", 3 * 1024 * 1024),
+        ("sub/c.bin", 3 * 1024 * 1024),
+    ] {
+        write_file(&old_dir.join(name), &make_data(len, len as u64));
+        old_total += len as u64;
+    }
+
+    // 运行中后加的新源
+    let new_dir = d.join("srcNew");
+    write_file(&new_dir.join("d.bin"), &make_data(2 * 1024 * 1024, 7));
+
+    let cancel = AtomicBool::new(false);
+    let opts = JobOptions {
+        ask_on_conflict: false,
+        quick_scan: false, // 默认值：大小相同就真算哈希
+        resume_prefix_check: true,
+        verify_after_copy: true,
+        hash_algo: ALGO,
+    };
+    let old_src = old_dir.to_string_lossy().into_owned();
+    let new_src = new_dir.to_string_lossy().into_owned();
+
+    // ---- 第一轮：目标为空 → 全是新拷贝，预扫描不读内容 ----
+    let mut hashed1 = 0u64;
+    let mut cb1 = |sp: &ScanProgress| hashed1 = sp.bytes_hashed;
+    let plan1 = scan::build_plan(
+        std::slice::from_ref(&old_src),
+        &target,
+        &opts,
+        &cancel,
+        &mut cb1,
+    )
+    .expect("第一轮建计划失败");
+    assert_eq!(plan1.stats.copy, 3, "目标为空 → 3 个文件都是完整拷贝");
+    assert_eq!(plan1.stats.skip, 0);
+    assert_eq!(hashed1, 0, "第一轮预扫描不该读任何文件内容");
+
+    exec_plan(&plan1, &cancel);
+    assert!(target.join("srcOld").join("a.bin").is_file(), "第一轮应真的落盘");
+
+    // ---- 第二轮：带上全部源（当前实现就是这么发请求的）----
+    let sources2 = vec![old_src, new_src];
+    let mut hashed2 = 0u64;
+    let mut cb2 = |sp: &ScanProgress| hashed2 = sp.bytes_hashed;
+    let plan2 = scan::build_plan(&sources2, &target, &opts, &cancel, &mut cb2)
+        .expect("第二轮建计划失败");
+
+    assert_eq!(plan2.stats.copy, 1, "只有新源那个文件需要拷贝");
+    assert_eq!(plan2.stats.skip, 3, "上一轮那 3 个文件应判定为「跳过」");
+    assert_eq!(
+        hashed2, old_total * 2,
+        "为了判定 3 个文件「跳过」，预扫描读了 源+目标 两份（{old_total} × 2 = {}）",
+        old_total * 2
+    );
+
+    // 把结论摆出来，方便和「只带新源」的请求形态对比
+    let hashed_only_new = {
+        let mut h = 0u64;
+        let mut cb3 = |sp: &ScanProgress| h = sp.bytes_hashed;
+        scan::build_plan(
+            &[new_dir.to_string_lossy().into_owned()],
+            &target,
+            &opts,
+            &cancel,
+            &mut cb3,
+        )
+        .expect("只带新源建计划失败");
+        h
+    };
+    assert_eq!(hashed_only_new, 0, "只带新源时目标为空 → 同样不读内容");
+
+    println!(
+        "\n  ✓ 排队那轮若带全部源：预扫描要读 {} B（源+目标各一遍）\n    \
+         排队那轮若只带新源：预扫描读 0 B → 立刻开始拷贝\n",
+        hashed2
+    );
+
+    let _ = fs::remove_dir_all(&d);
+}

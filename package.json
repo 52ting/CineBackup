@@ -1,7 +1,7 @@
 {
   "name": "cinebackup",
   "private": true,
-  "version": "0.4.2",
+  "version": "0.4.3",
   "type": "module",
   "description": "CineBackup - 影视素材 / DCP 跨平台备份工具 (Tauri 2 + Rust)",
   "license": "MIT",

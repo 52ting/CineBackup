@@ -216,8 +216,8 @@ export function renderStartButton({ running, queued }) {
   b.title = !running
     ? "按当前源与目标开始备份"
     : queued
-    ? "已排队：本轮任务结束后自动再跑一轮（已备份的文件会跳过）；点击取消排队"
-    : "不改动正在跑的任务，等它结束后自动再跑一轮（已备份的文件会自动跳过）";
+    ? "已排队：本轮任务结束后自动补跑新加的源；点击取消排队"
+    : "不改动正在跑的任务，等它结束后自动补跑新加的源（已备完的源不再重扫）";
   b.classList.toggle("queued", !!queued);
 }
 
@@ -267,6 +267,12 @@ export function setMidFolded(folded) {
 const trMap = new Map(); // path -> 节点引用集合
 
 function trRowText(r) {
+  // 预扫描阶段后端只发 SCAN、不发 PROGRESS，此时每行的字节数还是 0。
+  // 若仍显示「排队中」，在大目录 / 大量已备文件的场景下会长时间一片「排队中」，
+  // 看着像卡死（0.4.3 之前用户就是这么误判的）。
+  if (r.state === "scan") return "预扫描中…";
+  if (r.state === "scanning") return "正在扫描…";
+  if (r.state === "skipped") return "无需拷贝";
   if (r.state === "waiting") return "排队中";
   if (r.state === "failed") return "有文件失败";
   if (r.state === "done") return `已完成 · ${fmtBytes(r.bytesDone)}`;
@@ -347,7 +353,15 @@ export function renderTransfers(rows) {
     n.fill.style.width = `${pct.toFixed(2)}%`;
     n.bar.className =
       "tr-bar" +
-      (r.state === "done" ? " done" : r.state === "failed" ? " failed" : r.state === "waiting" ? " idle" : "");
+      (r.state === "done"
+        ? " done"
+        : r.state === "failed"
+        ? " failed"
+        : r.state === "waiting" || r.state === "skipped"
+        ? " idle"
+        : r.state === "scan" || r.state === "scanning"
+        ? " scan"
+        : "");
   }
 
   for (const [k, n] of trMap) {

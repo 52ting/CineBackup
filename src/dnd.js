@@ -135,7 +135,7 @@ function paint() {
     els.icon.textContent = "📥";
     els.title.textContent = "松开 → 加入备份源";
     els.sub.textContent = running
-      ? "当前任务跑完后会自动再跑一轮，已备份的文件会自动跳过"
+      ? "当前任务跑完后会自动补跑新加的源（已备完的源不再重扫）"
       : "可一次拖入多个文件 / 文件夹，将按断点续传规则逐项比对";
   }
 

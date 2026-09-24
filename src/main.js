@@ -29,6 +29,19 @@ const state = {
   midFolded: false,
   /** 运行中往源里加了新素材 → 排一轮追加备份，本轮结束后自动开跑 */
   pendingRun: false,
+  /**
+   * 上一轮实际发出去的源（归一化 key）。
+   *
+   * 「追加一轮」只补这里面**没有**的源，理由见 queueRun 的注释：
+   * 已经备完的源再扫一遍，判定「跳过」要靠内容哈希，会把源和目标各完整读一遍。
+   */
+  roundKeys: new Set(),
+  /**
+   * 本轮任务的相位：`"scan"`（预扫描）| `"copy"` | `"verify"`。
+   * 预扫描只发 `cb:scan`、不发 `cb:progress`，中栏靠这个字段决定
+   * 显示「预扫描中…」还是「排队中」，免得大目录扫描期间整列假死。
+   */
+  phase: "idle",
   /** 运行中每个源的进度行（来自后端 progress 事件） */
   runRows: [],
   /** @type {Array} 后端自动拉取到的磁盘 / 卷 */
@@ -571,10 +584,12 @@ function setMidView(view) {
 
 /** 进入传输视图，先用已选源铺出占位行（预扫描阶段后端还没算出按源数据） */
 function enterTransfers() {
+  state.phase = "scan";
   state.runRows = state.sources.map((s) => ({
     index: 0,
     path: s.path,
-    state: "waiting",
+    // 占位行标成 "scan" 而不是 "waiting"：现在确实在预扫描，不是干等
+    state: "scan",
     currentFile: "",
     bytesTotal: s.size || 0,
     bytesDone: 0,
@@ -587,13 +602,48 @@ function enterTransfers() {
   paintTransfers({ speedBps: 0 });
 }
 
+/**
+ * 预扫描阶段把「后端当前扫到的文件」映射到它归属的那一行，
+ * 只有那一行显示流动条纹 + 当前文件名，其余显示「预扫描中…」。
+ * @param {{current?:string}} p cb:scan 的载荷
+ */
+function paintScanRows(p) {
+  if (state.phase !== "scan" || !state.runRows.length) return;
+  const cur = p.current || "";
+  const hit = cur ? state.runRows.findIndex((r) => normKey(cur).startsWith(normKey(r.path) + "/") || normKey(cur) === normKey(r.path)) : -1;
+  let changed = false;
+  state.runRows = state.runRows.map((s, i) => {
+    if (i === hit) {
+      if (s.state === "scanning" && s.currentFile === cur) return s;
+      changed = true;
+      return { ...s, state: "scanning", currentFile: cur };
+    }
+    if (s.state === "scanning") {
+      changed = true;
+      return { ...s, state: "scan", currentFile: "" };
+    }
+    return s;
+  });
+  if (changed) paintTransfers({ speedBps: 0 });
+}
+
 /* ==================== 追加一轮（运行中加源） ==================== */
 
 /**
  * 排一轮追加备份。
  * 同一时间后端只允许一个任务（`AppState.busy`），所以运行中不硬闯，
  * 而是记一个标记：本轮 JOB_END 之后自动再跑一轮。
- * 备份本身是幂等的（已备份的文件按断点续传规则跳过），重跑一轮代价很小。
+ *
+ * ⚠️ 「重跑一轮」**并不便宜** —— 这是 0.4.3 修掉的一个真机 bug：
+ * 判定「已备份 → 跳过」靠的是内容哈希，而 `hash::files_identical`
+ * 要把**源和目标各完整读一遍**。所以带着全部源重跑，等于把上一轮刚写进目标的内容
+ * 从头再读两份。素材盘 1 TB → 空转约 2 TB 的读取时间；这期间中栏是
+ * `enterTransfers()` 铺的 `waiting` 占位行（预扫描只发 SCAN、不发 PROGRESS），
+ * 所以每一行都显示「排队中」，看着就像「排队了但什么都没拷」。
+ * 因此追加的那轮**只发新加进来的源**（见 `run(dryRun, "append")`）。
+ * 回归测试：`src-tauri/tests/resume_rule.rs` 的 `t13_second_round_rereads_everything_already_copied`。
+ *
+ * 一句话记住：「备份幂等」在**结果**上成立，在**代价**上不成立，别再按后者写代码。
  */
 function queueRun(reason = "") {
   if (!state.running) {
@@ -604,7 +654,7 @@ function queueRun(reason = "") {
   state.pendingRun = true;
   ui.pushLog(
     "info",
-    `${reason ? reason + "：" : ""}已排队，本轮任务结束后自动再跑一轮（已备份的文件会自动跳过）。不想跑就点「取消排队」。`
+    `${reason ? reason + "：" : ""}已排队，本轮任务结束后自动补跑新加的源（已备完的源不再重扫）。不想跑就点「取消排队」。`
   );
   ui.renderStartButton({ running: true, queued: true });
 }
@@ -663,10 +713,42 @@ function guard() {
 }
 
 /* ==================== 开始 / 试运行 ==================== */
-async function run(dryRun) {
+
+/**
+ * 开始一轮备份。
+ * @param {boolean} dryRun
+ * @param {"full"|"append"} [mode]
+ *   - `"full"`（默认）：把左栏当前的源全发一遍 —— 用户主动点「开始备份」/「试运行」
+ *   - `"append"`：运行中加源后自动追的那一轮 —— **只发新加进来的源**
+ */
+async function run(dryRun, mode = "full") {
   if (!guard()) return;
+  const allPaths = state.sources.map((s) => s.path);
+  let paths = allPaths;
+
+  if (mode === "append") {
+    paths = allPaths.filter((p) => !state.roundKeys.has(normKey(p)));
+    if (paths.length === 0) {
+      ui.pushLog("info", "追加一轮：没有新加的源，无需再跑。");
+      state.pendingRun = false;
+      ui.renderStartButton({ running: false, queued: false });
+      return;
+    }
+    ui.pushLog(
+      "info",
+      `追加一轮：只补新加的 ${paths.length} 个源` +
+        (allPaths.length > paths.length
+          ? `（上一轮已完成的 ${allPaths.length - paths.length} 个源不再重扫）`
+          : "") +
+        "。要重跑全部源，直接点「开始备份」。"
+    );
+  }
+
+  // 记下本轮发出的**全部**源（含被跳过的），下一轮的增量就相对它来算
+  state.roundKeys = new Set(allPaths.map(normKey));
+
   const req = {
-    sources: state.sources.map((s) => s.path),
+    sources: paths,
     target: state.target.path,
     options: collectOptions(),
   };
@@ -796,9 +878,13 @@ function subscribe() {
   on(EV.LOG, (p) => ui.pushLog(p.level || "info", p.message, p.ts));
   on(EV.STATUS, (p) => ui.renderStatus(p.status));
 
-  on(EV.SCAN, (p) => ui.renderScanProgress(p));
+  on(EV.SCAN, (p) => {
+    ui.renderScanProgress(p);
+    paintScanRows(p);
+  });
 
   on(EV.PROGRESS, (p) => {
+    state.phase = p.phase === "verify" ? "verify" : "copy";
     ui.renderProgress({ ...p, phase: p.phase === "verify" ? "verify" : "copy" });
     // 后端只在拷贝阶段带按源数据；校验阶段沿用上一批行，只让总进度继续动
     if (Array.isArray(p.sources) && p.sources.length) state.runRows = p.sources;
@@ -808,6 +894,12 @@ function subscribe() {
   on(EV.PLAN, (p) => {
     state.planBytes = p.totalBytes || 0;
     paintCapacity();
+    // 预扫描收工 → 占位行从「预扫描中」变「排队中」（马上就开拷）
+    state.phase = "planned";
+    state.runRows = state.runRows.map((s) =>
+      s.state === "scan" || s.state === "scanning" ? { ...s, state: "waiting", currentFile: "" } : s
+    );
+    paintTransfers({ speedBps: 0 });
     ui.pushLog(
       "info",
       `预扫描完成：完整拷贝 ${p.copy}，断点续传 ${p.resume}，跳过(内容一致) ${p.skip}，` +
@@ -838,6 +930,18 @@ function subscribe() {
 
   on(EV.JOB_END, (p) => {
     state.running = false;
+    state.phase = "idle";
+    // 收尾：本轮一个文件都没拷（全跳过 / 空目录 / 中途取消）时，占位行会停在
+    // 「预扫描中」「排队中」这种非终态，任务都结束了还挂着流动条纹 → 收干净
+    const leftover = state.runRows.some((s) => s.state === "scan" || s.state === "scanning" || s.state === "waiting");
+    if (leftover) {
+      state.runRows = state.runRows.map((s) =>
+        s.state === "scan" || s.state === "scanning" || s.state === "waiting"
+          ? { ...s, state: p.ok && !p.aborted ? "skipped" : "waiting", currentFile: "" }
+          : s
+      );
+      paintTransfers({ speedBps: 0 });
+    }
     ui.hideModals();
     ui.renderStatus(p.ok ? "done" : "idle");
     ui.markProgressDone(p.ok && !p.aborted);
@@ -864,9 +968,16 @@ function subscribe() {
         ui.pushLog("warn", "任务被中止 → 已取消排队的追加备份。");
       } else {
         state.pendingRun = false;
-        ui.pushLog("info", "排队的追加备份开始（源列表已更新，已备份的文件会自动跳过）…");
+        if (p.failed > 0) {
+          ui.pushLog(
+            "warn",
+            `上一轮有 ${p.failed} 个文件失败；追加一轮只补新加的源，不会自动重试它们 —— ` +
+              "需要的话请点「开始备份」重跑全部源。"
+          );
+        }
+        ui.pushLog("info", "排队的追加备份开始（只补运行中新加的源，已备完的源不重扫）…");
         setTimeout(() => {
-          if (!state.running) run(false);
+          if (!state.running) run(false, "append");
         }, 500);
       }
     }

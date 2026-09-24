@@ -390,6 +390,17 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 .tr-bar.done > i { background: linear-gradient(90deg, #55cc8c, var(--ok)); }
 .tr-bar.failed > i { background: linear-gradient(90deg, #ef8080, var(--danger)); }
 .tr-bar.idle > i { background: var(--border-strong); }
+/* 预扫描：总量还没算出来，进度未知 → 用经典「不确定进度条」来回滑的滑块表示在动 */
+.tr-bar.scan { position: relative; }
+.tr-bar.scan > i {
+  width: 32% !important;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+  animation: trScan 1.3s cubic-bezier(.45, 0, .55, 1) infinite alternate;
+}
+@keyframes trScan {
+  from { transform: translateX(0); }
+  to { transform: translateX(212.5%); }
+}
 
 .tr-foot {
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;

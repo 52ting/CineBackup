@@ -172,7 +172,7 @@ Tauri 会接管 webview 的原生拖放，通过 `tauri://drag-*` 事件把**绝
   最后还有一层「离哪一栏更近」的几何兜底。预览工具通过 `window.__CB_DND_SCALE__ = 1`
   固定尺度（它投递的本来就是 CSS 像素）。
 - 拖拽期间底部弹出提示卡，显示本次要放什么（最多列 3 条路径 + 「另外 N 项」），
-  并高亮命中的卡片、把另一侧压暗；运行中拖到左栏时提示卡会说明「跑完自动再跑一轮」。
+  并高亮命中的卡片、把另一侧压暗；运行中拖到左栏时提示卡会说明「跑完自动补跑新加的源」。
 - `over` 事件不带 `paths`，所以用 `enter` 带着的路径缓存起来给提示卡用；
   最终落点以 `drop` 事件**自带**的坐标为准（`over` 可能稀疏 / 缺失）。
 - 看门狗：超过 2.5 秒没有新事件就自动收起遮罩，兜住个别平台漏发 `leave` 的情况。
@@ -187,7 +187,7 @@ Tauri 会接管 webview 的原生拖放，通过 `tauri://drag-*` 事件把**绝
 | 项目 | 结果 |
 |---|---|
 | `cargo check --all-targets` | ✅ 0 error 0 warning |
-| `cargo test` | ✅ 30 passed / 0 failed（16 单元 + 14 集成） |
+| `cargo test` | ✅ 31 passed / 0 failed（16 单元 + 15 集成） |
 | `vite build` | ✅ 产出 `dist/` |
 | `npm run tauri build` | ✅ 产出 MSI + NSIS 两个安装包（见 6.3） |
 | 磁盘自动拉取 | ✅ 实机检测到 7 个卷（含 3 个映射网络盘），容量/只读标志正确 |
@@ -263,18 +263,27 @@ python tools/preview_ui.py --serve         # 或者起 http://127.0.0.1:8765 自
 |---|---|
 | `--theme dark` / `--theme light` | 强行走 `?theme=` 对应的配色（默认跟随系统） |
 | `--run` | 模拟点「开始备份」：发状态 / 计划 / 进度事件，中栏切成传输列表 |
+| `--scan` | 模拟**预扫描进行中**：中栏当前那行显示流动滑块 + 正在扫描的文件名，其余「预扫描中…」 |
 | `--run --fold` | 接着再点一次中栏箭头，截「运行中切回磁盘视图」的样子 |
 | `--dnd --dnd-x N --dnd-y N` | 模拟拖拽悬停，核对高亮框与命中判定（左栏 ≈300、右栏 ≈1150） |
 | `--dnd --drop` | 悬停 0.9 秒后真的松手投递一次，用来验证「落点到底判给了哪一侧」 |
+| `--probe` | 跑 `?queuetest=1` 回归场景（运行中加源），用无头 Chrome dump DOM 后打印判定 JSON，**不截图** |
 | `--width` / `--height` | 窗口尺寸（默认 1280×880） |
 
 ```bash
 python tools/preview_ui.py --shot --theme dark --run       # tools/ui-preview-run-dark.png
 python tools/preview_ui.py --shot --theme light            # tools/ui-preview-light.png
 python tools/preview_ui.py --shot --run --fold             # tools/ui-preview-run-fold-light.png
+python tools/preview_ui.py --shot --scan --theme dark      # tools/ui-preview-scan-dark.png
 python tools/preview_ui.py --shot --dnd --drop --dnd-x 1150  # 右栏松手 → 应设为目标
 python tools/preview_ui.py --shot --run --dnd --drop --dnd-x 300  # 运行中拖入左栏 → 应自动排队
+python tools/preview_ui.py --probe                         # 追加轮只补新源（打印 verdict 判定）
 ```
+
+`--probe` 是**回归探针**：脚本包一层 `window.__TAURI_INTERNALS__.invoke`，记下每次
+`start_job` 实际发出去的源，最后打印 `第二轮是否只含新源` 之类的判定。
+0.4.3 那个「排队了却没拷新素材」的 bug 就是先被它定位到「前端没问题、第二轮确实发了」
+（`startCallCount: 2`），再去后端找到真正的空转读取。
 
 假后端会返回 5 块盘（含 1 块映射网络盘、1 块剩余为 0 的掉线盘），并自动演一遍
 「加两个源 → 选一个目标」，所以截出来的是有内容的真实状态，不是空壳。
@@ -292,8 +301,13 @@ python tools/preview_ui.py --shot --run --dnd --drop --dnd-x 300  # 运行中拖
 > `index.html` 引用的始终是最新那个，功能不受影响，只是白多几十 KB。想干净就先 `npm run clean`。
 
 ⚠️ 注意打包顺序：`tauri build` 会在开头跑一次 `vite build`。
-如果打包启动**之后**才改前端，产出的安装包里还是旧界面——改完前端要重新打包一次
-（看 exe 内嵌的 asset hash 是否变化即可判断）。
+如果打包启动**之后**才改前端，产出的安装包里还是旧界面——改完前端要重新打包一次。
+
+> ⚠️ **别用「grep exe 找 asset hash」来判断前端新鲜度**（实测证伪）：Tauri 2 默认开启
+> `compression`，内嵌的前端资源整体被 brotli 压缩，exe 里既搜不到 `index-XXXX.js`，
+> 也搜不到 `optAlgo` 这类前端独有字符串（连 `index-` 前缀的命中数都是 0）。
+> 能搜到的只有 Rust 侧的明文（比如 `SHA-256`、报错文案）。
+> 可靠判据只有两个：① 打包前 `ls dist/assets` 只有当前这一对文件；② 重编一次看字节尺寸是否变化。
 
 ---
 
@@ -591,6 +605,30 @@ python tools\setup_bundler_tools.py nsis     # 只装 NSIS
 | 目标存在，**大小不一致** | **断点续传**：从目标文件末尾继续写入 | `copy.rs` → `CopyMode::Resume` |
 | 目标存在，大小一致，**内容哈希相同** | 跳过 | `scan.rs` 判定为 `Skip`，不进入拷贝 |
 | 目标存在，大小一致，**内容哈希不同** | 覆盖 | `copy.rs` → `CopyMode::Overwrite` |
+
+### ⚠️「跳过」不是免费的：追加一轮为什么只补新源（0.4.3）
+
+上表第三行的**跳过**判定要靠内容哈希，而 `hash::files_identical` 会把
+**源和目标各完整读一遍**。一句话：**「备份幂等」在结果上成立，在代价上不成立。**
+
+0.4.2 及以前，「运行中往左栏拖入新素材」会排一轮追加任务，而那一轮**带着全部源重跑**。
+于是首轮 1 TB 备完之后，追加轮要先空转读 ≈ 2 TB（源一份 + 刚写进目标的一份）才能碰到新素材；
+这段时间中栏每个源都是 `enterTransfers()` 铺的占位行，全部显示「排队中」——
+看上去就是「排队了，但一个文件都没拷」（用户就是这样报上来的）。
+
+0.4.3 起，追加轮**只发本轮新加进来的源**：前端 `state.roundKeys` 记下上一轮发过的源，
+`run(dryRun, "append")` 做差集（`src/main.js`）。回归测试
+`src-tauri/tests/resume_rule.rs::t13_second_round_rereads_everything_already_copied`
+把这个代价钉死：同一批数据，带全源的轮次预扫描要读 **20,971,520 B**（10 MiB 源 + 10 MiB 目标），
+只带新源的轮次读 **0 B**。
+
+> 代价上的取舍：上一轮**失败**的文件不会在追加轮自动重试。所以只要上一轮有失败，
+> 界面会明确提示「追加一轮只补新加的源，需要重试请点『开始备份』」。
+> 要走全量（逐项重扫、跳过已备完的），直接点「开始备份」。
+
+顺带把这段时间的界面反馈也补齐了：预扫描阶段不再整列显示「排队中」，而是
+当前扫到的那一行显示流动滑块 + 正在扫描的文件名，其余显示「预扫描中…」
+（`?scan=1` 预览场景可以核对，见 3.1）。
 
 ### 校验算法（默认 SHA-256）
 
