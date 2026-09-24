@@ -24,15 +24,30 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BUILDS = os.path.join(ROOT, os.pardir, "cinebackup-builds")
+# ⚠️ 必须和 watch_ci.py 的 OUTDIR 一致：产物落在**仓库同级**的 cinebackup-builds/。
+# 早先这里多写了一层 os.pardir，指到了「工作区根」那个同名目录 ——
+# 那里躺的是很早以前的一对陈货，于是 `verify_dmg.py` 不带参数时会一脸正经地
+# 验出一个几个月前的 dmg 并报「全部通过」。
+BUILDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "cinebackup-builds")
+LEGACY_BUILDS = os.path.join(ROOT, os.pardir, "cinebackup-builds")
 
 CPU_TYPES = {0x01000007: "x86_64 (Intel)", 0x0100000C: "arm64 (Apple Silicon)"}
 
 
-def newest_dmg():
+def builds_dir():
+    """优先项目下的 cinebackup-builds/（watch_ci 的落点），没有才退回工作区根那个。"""
     d = os.path.abspath(BUILDS)
-    if not os.path.isdir(d):
-        sys.exit("找不到 %s，先跑 `python tools/watch_ci.py watch` 把产物拉回来" % d)
+    if os.path.isdir(d) and any(f.endswith((".zip", ".dmg")) for f in os.listdir(d)):
+        return d
+    legacy = os.path.abspath(LEGACY_BUILDS)
+    if os.path.isdir(legacy):
+        print("      ⚠ 项目下没有产物，改用 %s（可能是旧版本，注意版本号）" % legacy)
+        return legacy
+    sys.exit("找不到产物目录 %s，先跑 `python tools/watch_ci.py watch`" % d)
+
+
+def newest_dmg():
+    d = builds_dir()
     cands = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".dmg")]
     if not cands:
         sys.exit("%s 里没有 .dmg" % d)
@@ -112,7 +127,12 @@ def verify_app_dir(app_dir):
 
 
 def verify_zip(zip_path):
-    """watch_ci.py 下载的是产物 zip（里面才是 dmg + app），顺手解开验一遍。"""
+    """watch_ci.py 下载的是产物 zip（里面才是 dmg + app），顺手解开验一遍。
+
+    返回整体是否通过 —— 早先这个返回值是丢掉的，于是「是不是 universal」
+    哪怕验失败，main() 也照样打印「✅ 全部通过」，等于白验。
+    """
+    ok = True
     with zipfile.ZipFile(zip_path) as z:
         names = z.namelist()
         print("[zip] %s  条目 %d" % (os.path.basename(zip_path), len(names)))
@@ -120,22 +140,45 @@ def verify_zip(zip_path):
         exes = [n for n in names if n.endswith("/MacOS/cinebackup")]
         if dmgs:
             out = os.path.join(os.path.dirname(zip_path), os.path.basename(dmgs[0]))
-            with open(out, "wb") as f:
-                f.write(z.read(dmgs[0]))
-            print("      → 已解出 %s" % out)
-            check_dmg(out)
+            # 旁边已经有同名 dmg（watch_ci 已解过）就别重复写一遍
+            if not (os.path.isfile(out) and os.path.getsize(out) == z.getinfo(dmgs[0]).file_size):
+                with open(out, "wb") as f:
+                    f.write(z.read(dmgs[0]))
+                print("      → 已解出 %s" % out)
+            ok = check_dmg(out) and ok
+        else:
+            print("      ✗ zip 里没有 .dmg")
+            ok = False
         if exes:
             data = z.read(exes[0])
             tmp = os.path.join(os.path.dirname(zip_path), "_macho_probe.bin")
             with open(tmp, "wb") as f:
                 f.write(data)
-            check_macho(tmp, "可执行文件")
-            os.remove(tmp)
+            try:
+                ok = check_macho(tmp, "可执行文件") and ok
+            finally:
+                os.remove(tmp)
+        else:
+            print("      ✗ zip 里找不到 Contents/MacOS/cinebackup")
+            ok = False
         plists = [n for n in names if n.endswith("Contents/Info.plist")]
         if plists:
             print("[plist] zip 内 %s" % plists[0])
             for k, v in plist_fields(z.read(plists[0])).items():
                 print("      %-8s: %s" % (k, v))
+        else:
+            print("      ✗ zip 里找不到 Info.plist")
+            ok = False
+    return ok
+
+
+def sibling_zip(path):
+    """产物 zip 和 dmg 是同一个 workflow artifact 里的，找一个同目录的 zip。"""
+    d = os.path.dirname(os.path.abspath(path))
+    for f in sorted(os.listdir(d)):
+        if f.endswith(".zip"):
+            return os.path.join(d, f)
+    return None
 
 
 def main():
@@ -143,11 +186,9 @@ def main():
     if args:
         target = args[0]
     else:
-        # 优先最新 zip（还没解过的），否则最新 dmg
-        cands = []
-        if os.path.isdir(os.path.abspath(BUILDS)):
-            cands = [os.path.join(os.path.abspath(BUILDS), f) for f in os.listdir(os.path.abspath(BUILDS))
-                     if f.endswith((".zip", ".dmg"))]
+        # 优先最新 zip（里面 .app / dmg 都在，能验全），否则最新 dmg
+        d = builds_dir()
+        cands = [os.path.join(d, f) for f in os.listdir(d) if f.endswith((".zip", ".dmg"))]
         if not cands:
             target = newest_dmg()
         else:
@@ -155,15 +196,24 @@ def main():
     print("== 校验 %s ==" % target)
     if target.endswith(".dmg"):
         ok = check_dmg(target)
+        # dmg 容器本身验不出 .app —— 够不到里面的 FAT 与 Info.plist。
+        # 同一个 artifact 里的 zip 才是能读进 .app 的那个，顺手一起验。
+        z = sibling_zip(target)
+        if z:
+            print()
+            ok = verify_zip(z) and ok
+        else:
+            print("      ⚠ 同目录没有产物 zip  →  只能验 dmg 容器，验不到里面的 .app"
+                  "（想验 FAT / Info.plist 就把 artifact zip 一起拉下来）")
     elif target.endswith(".zip"):
-        verify_zip(target)
-        ok = True
+        ok = verify_zip(target)
     elif target.endswith(".app") or os.path.isdir(target):
         ok = verify_app_dir(target)
     else:
         sys.exit("不认识的目标：%s（支持 .dmg / .zip / .app 目录）" % target)
     print("\n%s" % ("✅ 全部通过" if ok else "❌ 有检查项未通过"))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

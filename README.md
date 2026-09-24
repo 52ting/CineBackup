@@ -33,7 +33,7 @@ cinebackup/
 │   ├── gh_release.py            # ★ 发布安装包到 GitHub Release（见第十三节）
 │   ├── watch_ci.py              # ★ 盯云端构建 / 取产物（不用开浏览器、不用建 PAT，见 5.3）
 │   ├── make_src_zip.py          # ★ 打包源码 zip（排除构建产物 / 日志），用于搬到 Mac 上编译
-│   ├── verify_dmg.py            # 在 Windows 上校验 dmg 完整性（FAT 头 / Info.plist）
+│   ├── verify_dmg.py            # 在 Windows 上校验 dmg 完整性（dmg 魔数 / FAT 头 / Info.plist）
 │   ├── setup_bundler_tools.py   # ★ 镜像加速预置 WiX / NSIS（解决打包下载超时，见 6.4）
 │   ├── preview_ui.py            # ★ 改完界面秒级截图核对（注入假后端，不用编译 Rust）
 │   ├── debug_dom.py             # 把预览页 DOM dump 出来 + 抓控制台（排查前端事件用）
@@ -425,7 +425,42 @@ python tools/watch_ci.py watch          # 盯到结束，成功则自动下载�
 python tools/watch_ci.py logs <run_id>  # 构建失败时抓日志尾部
 ```
 
-### 5.4 装到本机
+### 5.4 不装也能先验包（Windows 上就能做）
+
+拿到 dmg 先别急着发出去，`verify_dmg.py` 靠**读字节**就能验三件事 —— 不用挂载、不用 macOS：
+
+```bash
+python tools/verify_dmg.py                       # 自动挑 cinebackup-builds/ 里最新的产物
+python tools/verify_dmg.py path/to/xxx.dmg       # 也可以指定（会顺带解开同目录的产物 zip）
+```
+
+| 验什么 | 怎么验 |
+|---|---|
+| dmg 是不是合法磁盘映像 | 尾部 512 字节以 `koly` 开头（UDIF 资源尾巴的魔数） |
+| 是不是**通用二进制** | `.app` 可执行文件头 4 字节 `0xCAFEBABE` = FAT_MAGIC，再逐条读架构表（`0x01000007`=x86_64 / `0x0100000C`=arm64） |
+| Info.plist 关键字段 | 从 plist 里搜 `CFBundleIdentifier` / `CFBundleShortVersionString` / `LSMinimumSystemVersion` |
+
+失败时**退出码为 1**，可以直接串进发布脚本。典型输出：
+
+```
+[dmg] CineBackup_0.4.4_universal.dmg
+      尾部魔数  : b'koly'  ✓ 合法 UDIF 磁盘映像
+[zip] CineBackup-macOS-universal.zip  条目 4
+      可执行文件      ✓ FAT universal，含 2 个架构
+        ├ x86_64 (Intel)         切片   5.63 MB（偏移 4096）
+        ├ arm64 (Apple Silicon)  切片   5.21 MB（偏移 5914624）
+[plist] zip 内 macos/CineBackup.app/Contents/Info.plist
+      标识符     : com.ronnie.cinebackup
+      版本      : 0.4.4
+      最低系统    : 10.15
+```
+
+> ⚠️ 两点容易踩：① dmg 容器本身**读不到里面的 `.app`** —— 想验 FAT / Info.plist
+> 必须有同目录的产物 zip（`watch_ci.py watch` 会一起拉下来），脚本会自动去找；
+> ② 产物目录是**仓库同级**的 `cinebackup-builds/`（与 `watch_ci.py` 的落点一致），
+> 不是工作区根目录下那个同名文件夹。
+
+### 5.5 装到本机
 
 ```bash
 cp -R "src-tauri/target/release/bundle/macos/CineBackup.app" /Applications/
@@ -437,7 +472,7 @@ open /Applications/CineBackup.app
 必须执行上面那条 `xattr`（或去「系统设置 → 隐私与安全性 → 仍要打开」点一下）。
 把 dmg 里的图标拖进「应用程序」也一样，拖完照样要跑一次 `xattr`。
 
-### 5.5 macOS 上的其他注意事项
+### 5.6 macOS 上的其他注意事项
 
 | 事项 | 说明 |
 |---|---|
@@ -783,7 +818,7 @@ MHL 文件生成、双盘同时并行备份、磁盘挂载监听、自动弹出�
 
 ## 十三、发布安装包到 GitHub Release
 
-当前线上版本：**https://github.com/52ting/CineBackup/releases/tag/v0.4.3**
+当前线上版本：**https://github.com/52ting/CineBackup/releases/tag/v0.4.4**
 （无需登录即可下载：`https://github.com/52ting/CineBackup/releases/latest`）
 
 ### 13.1 一条命令发布
