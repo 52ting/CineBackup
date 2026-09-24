@@ -439,10 +439,25 @@ export function markProgressDone(ok) {
 
 /* ==================== 日志 ==================== */
 let logLines = 0;
+/**
+ * 日志行的时间戳。
+ * 后端 `now_iso8601()` 给的是 **UTC**（`2026-09-24T03:27:10Z`），
+ * 早先直接 `ts.slice(11,19)` 取字符串 → 把 UTC 当本地时间显示，
+ * 在 GMT+8 上日志里会同时出现 03:27 和 11:27 两种时刻，看着像两天的记录。
+ * 这里统一转成浏览器本地时间再格式化。
+ */
+function logClock(ts) {
+  if (ts) {
+    const d = new Date(ts);
+    if (!Number.isNaN(d.getTime())) return d.toTimeString().slice(0, 8);
+  }
+  return new Date().toTimeString().slice(0, 8);
+}
+
 export function pushLog(level, message, ts) {
   const box = $("logBox");
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-  const time = (ts && ts.slice(11, 19)) || new Date().toTimeString().slice(0, 8);
+  const time = logClock(ts);
   const div = document.createElement("div");
   div.className = `line lv-${level}`;
   div.innerHTML = `<span class="t">${time}</span>${esc(message)}`;

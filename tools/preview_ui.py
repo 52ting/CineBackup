@@ -174,7 +174,9 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
         });
       };
       push();
-      setInterval(push, 600);
+      // 存下 id：queuetest 场景需要在「本轮结束」时把它停掉，
+      // 否则这个只带本轮 3 个源的定时器会一直覆盖下一轮的进度数据
+      window.__cbRunTimer = setInterval(push, 600);
 
       // 文件级结果 → 「校验结果」表里能看到 SHA-256 的 64 位校验值
       // （故意混一条 fail 和一条 skip，覆盖有值 / 无值两种单元格）
@@ -257,18 +259,47 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
         name: (e.querySelector(".tr-src") || {}).textContent || "",
         state: e.dataset.state,
       }));
+    const resultSnap = () =>
+      Array.from(document.querySelectorAll("#resultTbody tr"))
+        .filter((tr) => !tr.classList.contains("empty-row"))
+        .map((tr) => ({
+          file: ((tr.querySelector(".path-cell") || {}).textContent || "").trim(),
+          status: ((tr.querySelector("td span") || {}).textContent || "").trim(),
+          hash: ((tr.querySelector(".hash-cell") || {}).textContent || "").trim(),
+        }));
     // 日志面板里的时间戳是真实时钟，跨运行时无意义，只留级别+正文
     const logLines = () =>
       Array.from(document.querySelectorAll("#logBox .line")).map((e) =>
         e.textContent.replace(/^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/, "").trim()
       );
 
+    // 追加轮后端只会带这 4 个新源（= 拖进来减去已存在的那条）
+    const APPEND_SRC = [
+      { index: 0, path: "E:\\\\拍摄素材\\\\《山海》A001_20260901",
+        bytesTotal: 21474836480, bytesDone: 21474836480,
+        filesTotal: 5, filesDone: 5, state: "done", currentFile: "" },
+      { index: 1, path: "E:\\\\拍摄素材\\\\《山海》A002_20260902",
+        bytesTotal: 32212254720, bytesDone: 10737418240,
+        filesTotal: 7, filesDone: 2, state: "active",
+        currentFile: "E:\\\\拍摄素材\\\\《山海》A002_20260902\\\\A002_C003_0715AD.R3D" },
+      { index: 2, path: "D:\\\\PROXY\\\\day03.mov",
+        bytesTotal: 2147483648, bytesDone: 0,
+        filesTotal: 1, filesDone: 0, state: "waiting", currentFile: "" },
+      { index: 3, path: "D:\\\\PROXY\\\\day04.mov",
+        bytesTotal: 2147483648, bytesDone: 0,
+        filesTotal: 1, filesDone: 0, state: "waiting", currentFile: "" },
+    ];
+
     const dump = () => {
       if (document.getElementById("probeOut")) return;
-      // 断言：运行中加源后排的那一轮，应「只带新加的源」。
+      // 只有 --probe 才把判定贴到页面上：截图模式下这会盖住整个界面
+      if (!qs.has("probe")) return;
+      // 断言一：运行中加源后排的那一轮，应「只带新加的源」。
       // 带上老源的话，预扫描要把上一轮刚写完的内容（源+目标）各再读一遍 —— 素材盘上就是几小时空转。
       const first = calls[0] ? calls[0].sources : [];
       const second = calls[1] ? calls[1].sources : [];
+      const rows = rowSnap();
+      const results = resultSnap();
       const pre = document.createElement("pre");
       pre.id = "probeOut";
       pre.textContent = JSON.stringify(
@@ -281,10 +312,28 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
             第二轮是否只含新源:
               second.length > 0 && second.every((p) => !first.includes(p)),
           },
+          // 断言二：追加轮是「承接」而不是「重开」——
+          // 上一轮已完成的传输行和校验结果都必须还在（0.4.3 曾把它们清掉，
+          // 表现就是「第一个先拷的文件没有校验值」）。
+          carryover: {
+            中栏行数: rows.length,
+            中栏是否保留上一轮的源: first.every((p) =>
+              rows.some((r) => p.indexOf(r.name) >= 0 || r.name === p)
+            ),
+            结果表行数: results.length,
+            结果表是否保留上一轮的校验值:
+              results.some((r) => /A001_C001_0701AB/.test(r.file)) &&
+              results.some((r) => r.hash && r.hash !== "—"),
+            结果表文件: results.map((r) => r.file),
+            通过计数: (document.getElementById("cntPass") || {}).textContent,
+          },
           btnText: btns() ? btns().textContent : "(无按钮)",
           btnQueued: btns() ? btns().classList.contains("queued") : null,
           srcCount: (document.getElementById("srcCount") || {}).textContent,
-          rows: rowSnap(),
+          // 断言三：日志措辞别串台 —— 「本轮追加」这种标签只能出现在真正的追加轮
+          firstSummary,
+          第一轮是否被误标为追加: /本轮追加/.test(firstSummary),
+          rows: rows,
           warnOrErrLogs: logLines().filter((l) => /失败|错误|取消|中止/.test(l)),
           tailLogs: logLines().slice(-14),
         },
@@ -295,6 +344,29 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
       document.title = "PROBE_DONE";
     };
 
+    // 3s：再补一条**本轮（上一轮）**的校验结果。
+    // 目的是让「结果表是否保留上一轮」这条断言不依赖时序运气：
+    // 任务肯定已经开始跑（开始备份的点击在 2.2s 左右），因此这条一定进的是
+    // 第一轮的结果表 —— 追加轮开跑后它必须还在。
+    setTimeout(() => {
+      window.__cbEmit("cb:file-result", {
+        path: "D:\\\\拍摄素材\\\\《山海》A001_20260901\\\\A001_C009_0710ZZ.R3D",
+        target: "E:\\\\CineBackup\\\\2026-09-24\\\\《山海》A001_20260901\\\\A001_C009_0710ZZ.R3D",
+        size: 4294967296, status: "pass",
+        srcHash: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        dstHash: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        message: "SHA-256 校验一致",
+      });
+    }, 3000);
+
+    // 6.1s：job-end 刚处理完、追加轮还没起跑 —— 抓这一瞬间的措辞，
+    // 用来确认「（本轮追加）」这种标签只出现在真正的追加轮，不会跑到第一轮头上
+    let firstSummary = "";
+    setTimeout(() => {
+      const all = logLines().filter((l) => l.indexOf("汇总") === 0);
+      firstSummary = all.length ? all[all.length - 1] : "(没有汇总行)";
+    }, 6100);
+
     // 6s：模拟本轮任务跑完（注意 elapsedSecs 必须有值，否则前端 toFixed 会抛错）
     setTimeout(() => {
       window.__cbEmit("cb:job-end", {
@@ -302,8 +374,22 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
         pass: 12, failed: 0, totalBytes: 123456789, elapsedSecs: 3.5,
         aborted: false, dryRun: false,
       });
+      // 本轮结束 → 本轮那个「只带老源」的进度定时器必须停掉，
+      // 真机上后端这时已经把进度切到追加轮了
+      if (window.__cbRunTimer) clearInterval(window.__cbRunTimer);
     }, 6000);
-    // 9s：第二轮（500ms 延时 + 起跑）早该开始了，抓状态
+    // 7.4s：追加轮已经开跑（job-end + 500ms 延时）→ 投一条**只含新源**的进度。
+    //        此时上一轮那 3 行和校验结果表都必须还在。
+    setTimeout(() => {
+      window.__cbEmit("cb:progress", {
+        phase: "copy", filesTotal: 14, filesDone: 7,
+        bytesTotal: 77284382720, bytesDone: 32212254720,
+        speedBps: 503316480, etaSecs: 90,
+        currentFile: APPEND_SRC[1].currentFile,
+        currentFileDone: 0, currentFileTotal: 0, elapsedSecs: 42, sources: APPEND_SRC,
+      });
+    }, 7400);
+    // 9s：追加轮进度早已到达，抓状态
     setTimeout(dump, 9000);
   }
 
@@ -520,6 +606,17 @@ def main():
     ap.add_argument("--width", type=int, default=1560)
     ap.add_argument("--height", type=int, default=1000)
     ap.add_argument(
+        "--wait",
+        type=int,
+        default=0,
+        help="截图前的等待毫秒数（默认 6000；queuetest 场景自动用 10000）",
+    )
+    ap.add_argument(
+        "--queuetest",
+        action="store_true",
+        help="配合 --shot：跑「运行中加源 → 追加轮」场景并截图（可看到上一轮的行与校验结果仍在）",
+    )
+    ap.add_argument(
         "--dnd",
         action="store_true",
         help="截「拖拽悬停」态（显示投放遮罩），配合 --dnd-x / --dnd-y 指定悬停位置",
@@ -559,7 +656,7 @@ def main():
     )
     args = ap.parse_args()
 
-    if args.probe:
+    if args.probe or args.queuetest:
         # 回归场景固定需要：运行中 + 往左栏拖一次（新源）+ 排队探针
         args.run = args.dnd = args.drop = True
 
@@ -575,6 +672,8 @@ def main():
             name += "-run"
         if args.scan:
             name += "-scan"
+        if args.queuetest:
+            name += "-queuetest"
         if args.fold:
             name += "-fold"
         if args.opts:
@@ -598,8 +697,10 @@ def main():
         parts.append("scan=1")
     if args.opts:
         parts.append("opts=1")
-    if args.probe:
+    if args.probe or args.queuetest:
         parts.append("queuetest=1")
+    if args.probe:
+        parts.append("probe=1")
     query = "?" + "&".join(parts) if parts else ""
 
     build()
@@ -610,7 +711,9 @@ def main():
     elif args.shot:
         serve_bg()
         time.sleep(0.7)
-        shot(out, args.width, args.height, query=query)
+        # queuetest 场景里「追加轮进度」在 7.4s 才投出来，默认 6s 的预算截不到
+        wait = args.wait or (10000 if "queuetest" in query else 6000)
+        shot(out, args.width, args.height, wait_ms=wait, query=query)
     elif args.serve:
         print(f"[preview] 拖拽态预览地址：http://127.0.0.1:{PORT}/?dnd=1&x=960&y=300")
         serve_bg()

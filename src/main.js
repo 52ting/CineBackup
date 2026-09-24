@@ -44,6 +44,8 @@ const state = {
   phase: "idle",
   /** 运行中每个源的进度行（来自后端 progress 事件） */
   runRows: [],
+  /** 本轮是 `"full"` 还是 `"append"`，用于日志措辞与结果表累积语义 */
+  roundMode: "full",
   /** @type {Array} 后端自动拉取到的磁盘 / 卷 */
   disks: [],
   running: false,
@@ -582,35 +584,68 @@ function setMidView(view) {
   paintMid();
 }
 
-/** 进入传输视图，先用已选源铺出占位行（预扫描阶段后端还没算出按源数据） */
-function enterTransfers() {
+/**
+ * 进入传输视图，为**本轮实际发出去的源**铺占位行。
+ *
+ * @param {string[]} paths 本轮发给后端的源（追加轮只有新源，全量轮是全部源）
+ * @param {boolean} [merge]
+ *   `false`（默认，全量轮）：整列重铺 —— 上一轮的行已经没有意义了
+ *   `true`（追加轮）：**保留上一轮那些行**（它们已经跑完、状态是 done），
+ *   只给新源补占位行，否则「先备 A、再加 B/C」跑完后 A 那一行会凭空消失
+ */
+function enterTransfers(paths, merge = false) {
   state.phase = "scan";
-  state.runRows = state.sources.map((s) => ({
+  const prev = new Map(state.runRows.map((r) => [normKey(r.path), r]));
+  const placeholder = (p, old) => ({
     index: 0,
-    path: s.path,
+    path: p,
     // 占位行标成 "scan" 而不是 "waiting"：现在确实在预扫描，不是干等
     state: "scan",
     currentFile: "",
-    bytesTotal: s.size || 0,
+    bytesTotal: old ? old.bytesTotal : sourceSizeOf(p),
     bytesDone: 0,
     filesTotal: 0,
     filesDone: 0,
-  }));
+    // 标记「这行还是我铺的占位，后端没给过真实数据」。
+    // 后端推来的 SourceProgress 没有这个字段，一合并就等于清除。
+    // 任务结束时只收这种行，免得把上一轮（追加轮）那些真行也误标成「无需拷贝」。
+    pending: true,
+  });
+
+  const sent = new Set(paths.map(normKey));
+  // 追加轮：本轮没发的源（= 上一轮已完成的）原样留着，排在前面
+  const kept = merge ? state.runRows.filter((r) => !sent.has(normKey(r.path))) : [];
+  state.runRows = kept.concat(paths.map((p) => placeholder(p, prev.get(normKey(p)))));
+
   state.midView = "transfers";
   state.midFolded = false;
   ui.setMidFolded(false);
   paintTransfers({ speedBps: 0 });
 }
 
+/** 左栏里这个源登记的字节数（后端预扫描前只能先用它估个总量） */
+function sourceSizeOf(p) {
+  const s = state.sources.find((x) => normKey(x.path) === normKey(p));
+  return s?.size || 0;
+}
+
 /**
  * 预扫描阶段把「后端当前扫到的文件」映射到它归属的那一行，
  * 只有那一行显示流动条纹 + 当前文件名，其余显示「预扫描中…」。
+ * 只在本轮新铺的行里找（追加轮里上一轮已完成的行不该被翻出来重扫）。
  * @param {{current?:string}} p cb:scan 的载荷
  */
 function paintScanRows(p) {
   if (state.phase !== "scan" || !state.runRows.length) return;
   const cur = p.current || "";
-  const hit = cur ? state.runRows.findIndex((r) => normKey(cur).startsWith(normKey(r.path) + "/") || normKey(cur) === normKey(r.path)) : -1;
+  const under = (child, parent) => {
+    const c = normKey(child);
+    const q = normKey(parent);
+    return c === q || c.startsWith(q + "/");
+  };
+  const hit = cur
+    ? state.runRows.findIndex((r) => (r.state === "scan" || r.state === "scanning") && under(cur, r.path))
+    : -1;
   let changed = false;
   state.runRows = state.runRows.map((s, i) => {
     if (i === hit) {
@@ -625,6 +660,20 @@ function paintScanRows(p) {
     return s;
   });
   if (changed) paintTransfers({ speedBps: 0 });
+}
+
+/**
+ * 合并后端推来的「按源进度」与已有的行。
+ *
+ * 追加轮只发新源，后端 `progress.sources` 里自然只有新源 —— 若直接替换，
+ * 上一轮那些已完成的行就从列表里消失了。所以：**本轮没提到的行保留**，
+ * 提到的行按后端数据更新，顺序 = 保留行 + 本轮行（与左栏顺序一致）。
+ */
+function mergeSourceRows(prev, incoming) {
+  if (!prev.length) return incoming;
+  const inKeys = new Set(incoming.map((r) => normKey(r.path)));
+  const kept = prev.filter((r) => !inKeys.has(normKey(r.path)));
+  return kept.length ? kept.concat(incoming) : incoming;
 }
 
 /* ==================== 追加一轮（运行中加源） ==================== */
@@ -720,18 +769,24 @@ function guard() {
  * @param {"full"|"append"} [mode]
  *   - `"full"`（默认）：把左栏当前的源全发一遍 —— 用户主动点「开始备份」/「试运行」
  *   - `"append"`：运行中加源后自动追的那一轮 —— **只发新加进来的源**
+ *
+ * ⚠️ 追加轮是**承接**上一轮，不是重开：中栏保留上一轮已完成的行、校验结果表也不清空。
+ * 早期版本这两处都按「新任务」处理，于是「先备 A，运行中再加 B/C」跑完后
+ * A 的校验值和中栏那一行都会消失 —— 看着就像「只校验了后加的两个」。
  */
 async function run(dryRun, mode = "full") {
   if (!guard()) return;
+  const append = mode === "append";
   const allPaths = state.sources.map((s) => s.path);
   let paths = allPaths;
+  state.roundMode = append ? "append" : "full";
 
-  if (mode === "append") {
+  if (append) {
     paths = allPaths.filter((p) => !state.roundKeys.has(normKey(p)));
     if (paths.length === 0) {
       ui.pushLog("info", "追加一轮：没有新加的源，无需再跑。");
       state.pendingRun = false;
-      ui.renderStartButton({ running: false, queued: false });
+      ui.renderStartButton({ running: state.running, queued: false });
       return;
     }
     ui.pushLog(
@@ -740,7 +795,7 @@ async function run(dryRun, mode = "full") {
         (allPaths.length > paths.length
           ? `（上一轮已完成的 ${allPaths.length - paths.length} 个源不再重扫）`
           : "") +
-        "。要重跑全部源，直接点「开始备份」。"
+        "。校验结果表承接上一轮，不清空；要重跑全部源，直接点「开始备份」。"
     );
   }
 
@@ -756,13 +811,21 @@ async function run(dryRun, mode = "full") {
   state.planBytes = 0;
   ui.resetProgress();
   refreshAlgoUi(); // 结果表的「校验值」列头要跟本次任务实际用的算法一致
-  ui.resetResults();
+  // 全量轮 = 重开一张干净的结果表；追加轮 = 接着上一轮的往下加
+  if (!append) ui.resetResults();
   ui.renderStatus("scanning");
   // 中栏由「磁盘」切到「传输」：收起磁盘网格，改看每个源自己的进度条
-  enterTransfers();
+  enterTransfers(paths, append);
   ui.renderStartButton({ running: true, queued: state.pendingRun });
   paintDisks(); // 磁盘卡转入「运行中」状态，不再接受点击
-  ui.pushLog("info", dryRun ? "===== 开始试运行 Dry Run（不写入任何数据）=====" : "===== 开始备份任务 =====");
+  ui.pushLog(
+    "info",
+    dryRun
+      ? "===== 开始试运行 Dry Run（不写入任何数据）====="
+      : append
+      ? `===== 追加一轮备份（只补 ${paths.length} 个新源，校验结果承接上一轮）=====`
+      : "===== 开始备份任务 ====="
+  );
   try {
     await startJob(req, dryRun);
   } catch (e) {
@@ -886,8 +949,11 @@ function subscribe() {
   on(EV.PROGRESS, (p) => {
     state.phase = p.phase === "verify" ? "verify" : "copy";
     ui.renderProgress({ ...p, phase: p.phase === "verify" ? "verify" : "copy" });
-    // 后端只在拷贝阶段带按源数据；校验阶段沿用上一批行，只让总进度继续动
-    if (Array.isArray(p.sources) && p.sources.length) state.runRows = p.sources;
+    // 后端只在拷贝阶段带按源数据；校验阶段沿用上一批行，只让总进度继续动。
+    // 追加轮后端只带新源 → 用合并而不是替换，免得上一轮已完成的行消失。
+    if (Array.isArray(p.sources) && p.sources.length) {
+      state.runRows = mergeSourceRows(state.runRows, p.sources);
+    }
     paintTransfers(p);
   });
 
@@ -931,13 +997,13 @@ function subscribe() {
   on(EV.JOB_END, (p) => {
     state.running = false;
     state.phase = "idle";
-    // 收尾：本轮一个文件都没拷（全跳过 / 空目录 / 中途取消）时，占位行会停在
-    // 「预扫描中」「排队中」这种非终态，任务都结束了还挂着流动条纹 → 收干净
-    const leftover = state.runRows.some((s) => s.state === "scan" || s.state === "scanning" || s.state === "waiting");
-    if (leftover) {
+    // 收尾：本轮一个文件都没拷（全跳过 / 空目录）时，占位行会停在
+    // 「预扫描中」「排队中」这种非终态，任务都结束了还挂着流动滑块 → 收干净。
+    // 只收 `pending` 行（= 后端从没给过数据的占位），别动上一轮留下的真实行。
+    if (state.runRows.some((s) => s.pending)) {
       state.runRows = state.runRows.map((s) =>
-        s.state === "scan" || s.state === "scanning" || s.state === "waiting"
-          ? { ...s, state: p.ok && !p.aborted ? "skipped" : "waiting", currentFile: "" }
+        s.pending
+          ? { ...s, state: p.ok && !p.aborted ? "skipped" : "waiting", currentFile: "", pending: false }
           : s
       );
       paintTransfers({ speedBps: 0 });
@@ -952,10 +1018,13 @@ function subscribe() {
     } else {
       ui.pushLog("ok", "===== 任务结束 =====");
     }
+    const appendRound = state.roundMode === "append";
     ui.pushLog(
       p.failed > 0 ? "warn" : "ok",
-      `汇总：拷贝 ${p.copied} · 续传 ${p.resumed} · 覆盖 ${p.overwritten} · 跳过 ${p.skipped} · ` +
-        `校验通过 ${p.pass} · 失败 ${p.failed}；共写入 ${fmtBytes(p.totalBytes)}，耗时 ${p.elapsedSecs.toFixed(1)}s`
+      `汇总${appendRound ? "（本轮追加，只含新源）" : ""}：` +
+        `拷贝 ${p.copied} · 续传 ${p.resumed} · 覆盖 ${p.overwritten} · 跳过 ${p.skipped} · ` +
+        `校验通过 ${p.pass} · 失败 ${p.failed}；共写入 ${fmtBytes(p.totalBytes)}，耗时 ${p.elapsedSecs.toFixed(1)}s` +
+        (appendRound ? "。底部结果表与计数是累计值，上一轮已完成的源仍在表里。" : "")
     );
     if (p.message) ui.pushLog(p.ok ? "info" : "error", p.message);
     // 盘上数据变了 → 刷新剩余空间，并让磁盘卡脱离「运行中」状态
