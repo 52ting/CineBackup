@@ -61,8 +61,18 @@ impl PlannedAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanItem {
+    /// 源路径（展示用字符串；含非法 UTF-8 字节时用 lossy 替换成 U+FFFD）
     pub src: String,
+    /// 目标路径（展示用字符串，同上）
     pub dst: String,
+    /// 源路径的**原始字节**路径。拷贝 / 哈希 / 校验一律用它，
+    /// 绝不经过 `to_string_lossy()` —— 否则非法字节被替换成 `�`，
+    /// 后续 `File::open` 就再也打不开真实文件了（EILSEQ 的真凶之一）。
+    #[serde(skip)]
+    pub src_path: std::path::PathBuf,
+    /// 目标路径的原始字节路径（同上）
+    #[serde(skip)]
+    pub dst_path: std::path::PathBuf,
     pub size: u64,
     /// 目标已存在文件的大小（不存在为 0）
     pub existing_size: u64,

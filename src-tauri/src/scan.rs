@@ -186,6 +186,8 @@ pub fn build_plan(
                 plan.items.push(PlanItem {
                     src: path_to_string(&src),
                     dst: path_to_string(&dst),
+                    src_path: src.clone(),
+                    dst_path: dst.clone(),
                     size,
                     existing_size: 0,
                     action: PlannedAction::Copy,
@@ -260,6 +262,8 @@ pub fn build_plan(
         plan.items.push(PlanItem {
             src: path_to_string(&src),
             dst: path_to_string(&dst),
+            src_path: src.clone(),
+            dst_path: dst.clone(),
             size,
             existing_size,
             action,

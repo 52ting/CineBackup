@@ -17,7 +17,6 @@
 //! 小文件几百毫秒能连着读完好几个，它们会整段被吞掉 —— 表现就是「结果表在涨、
 //! 进度条不动」。两条约定各有回归测试，见 `tests/verify_progress.rs`。
 
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -124,8 +123,11 @@ pub fn run_verify_with(
             break;
         }
         let it = &items[pos];
-        let src = Path::new(&it.src);
-        let dst = Path::new(&it.dst);
+        // 用原始字节路径做哈希（哈希只校验文件内容，不校验文件名）；
+        // `it.src`/`it.dst` 是 lossy 后的字符串，非法字节会被替换成 `�`，
+        // 拿它去 open 会打不开真实文件。
+        let src = &it.src_path;
+        let dst = &it.dst_path;
         // 一个文件读「源 + 目标」两遍，所以「当前文件」的总量是 size × 2
         let file_total = it.size.saturating_mul(2);
         let cur = path_to_string(src);

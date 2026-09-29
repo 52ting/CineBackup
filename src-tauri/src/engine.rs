@@ -400,8 +400,13 @@ fn run_copy_phase(
             out.aborted = true;
             break;
         }
-        let src = std::path::PathBuf::from(&plan.items[i].src);
-        let dst = std::path::PathBuf::from(&plan.items[i].dst);
+        // 关键：拷贝/哈希/校验一律用原始字节路径（src_path/dst_path），
+        // 绝不用 lossy 后的 src/dst 字符串 —— 非法 UTF-8 字节会被替换成 `�`，
+        // 导致 File::open 打不开真实文件。src/dst 只用于日志与前端展示。
+        let src = plan.items[i].src_path.clone();
+        let dst = plan.items[i].dst_path.clone();
+        // 遇到非法 UTF-8 文件名 → 打警告日志标记，但**继续拷贝**（不阻断）。
+        warn_if_non_utf8(app, &src, &dst);
         let size = plan.items[i].size;
         let existing = plan.items[i].existing_size;
         let mut action = plan.items[i].action;
@@ -915,6 +920,33 @@ fn emit_dry_run_preview(app: &AppHandle, items: &[PlanItem]) {
 
 fn action_name(a: PlannedAction) -> &'static str {
     a.label()
+}
+
+/// 源/目标路径里有非法 UTF-8 字节时，打一条警告日志标记这个路径，
+/// 但**继续任务、不阻断**。文件内容与文件名编码无关 —— 名字有非法字节 ≠ 文件损坏。
+///
+/// 只在 Unix 上检测（`OsStr` 是原始字节；Windows 的 `OsStr` 是 UTF-16，恒为合法 Unicode）。
+fn warn_if_non_utf8(app: &AppHandle, src: &Path, dst: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let bad_src = std::str::from_utf8(src.as_os_str().as_bytes()).is_err();
+        let bad_dst = std::str::from_utf8(dst.as_os_str().as_bytes()).is_err();
+        if bad_src || bad_dst {
+            events::emit_log(
+                app,
+                "warn",
+                format!(
+                    "文件名含非法字节（编码异常），已按原始字节继续拷贝：{}",
+                    path_to_string(if bad_src { src } else { dst })
+                ),
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, src, dst);
+    }
 }
 
 /// 用户选了「覆盖」时的最终动作：
