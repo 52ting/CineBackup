@@ -502,6 +502,8 @@ export function resetResults() {
   $("cntPass").textContent = "0";
   $("cntFail").textContent = "0";
   $("cntSkip").textContent = "0";
+  // 新任务重开结果表时，筛选一并复位到「全部」，免得用户漏看新结果
+  setResultFilter("all");
 }
 /** 校验值列的表头跟着所选算法走（SHA-256 = 64 字符 / xxHash64 = 16 字符） */
 export function setHashHeader(label) {
@@ -520,6 +522,9 @@ export function addResult(r) {
   const m = ST_MAP[r.status] || ST_MAP.skip;
   const tr = document.createElement("tr");
   tr.className = m.cls;
+  // 归一化状态，供筛选器定位（error 归到 fail）
+  const bucket = r.status === "pass" ? "pass" : r.status === "fail" || r.status === "error" ? "fail" : "skip";
+  tr.dataset.status = bucket;
 
   // 校验值：源/目标不一致时（fail）把两份都塞进 tooltip，方便比对
   const src = r.srcHash || "";
@@ -532,16 +537,59 @@ export function addResult(r) {
     hashCell = `<td class="hash-cell" title="${esc(tip)}">${esc(src)}</td>`;
   }
 
+  // 失败行的说明里带上目标路径：定位「名字写不进去」这类问题时，目标在哪一目了然
+  const msgTip = r.target ? `${r.message || ""}\n目标：${r.target}` : r.message || "";
   tr.innerHTML = `<td><span class="${r.status === "fail" || r.status === "error" ? "st-fail" : r.status === "pass" ? "st-pass" : "st-skip"}">${m.icon} ${m.label}</span></td>
     <td class="path-cell mono" title="${esc(r.path)}">${esc(baseName(r.path))}</td>
     <td class="mono">${fmtBytes(r.size)}</td>
     ${hashCell}
-    <td title="${esc(r.message || "")}">${esc(r.message || "")}</td>`;
+    <td title="${esc(msgTip)}">${esc(r.message || "")}</td>`;
   tb.appendChild(tr);
+  // 若当前正筛选某状态，新行不符合的就直接隐藏
+  if (resultFilter !== "all" && bucket !== resultFilter) {
+    tr.classList.add("row-filtered");
+  } else {
+    // 出现了匹配当前筛选的行 → 撤掉「没有匹配文件」的占位提示
+    const note = tb.querySelector(".filter-empty-note");
+    if (note) note.remove();
+  }
 }
 export function bumpCounter(kind) {
   const el = kind === "pass" ? $("cntPass") : kind === "fail" ? $("cntFail") : $("cntSkip");
   el.textContent = String(Number(el.textContent) + 1);
+}
+
+/* ==================== 结果表筛选 ==================== */
+let resultFilter = "all"; // "all" | "pass" | "fail" | "skip"
+
+/** 切换筛选并应用；`f` 为 null 时只按当前状态重刷 */
+export function setResultFilter(f) {
+  if (f) {
+    resultFilter = f;
+    document.querySelectorAll("#resultFilter .flt").forEach((b) => {
+      b.classList.toggle("active", b.dataset.f === f);
+    });
+  }
+  const tb = $("resultTbody");
+  tb.querySelectorAll("tr[data-status]").forEach((tr) => {
+    const show = resultFilter === "all" || tr.dataset.status === resultFilter;
+    tr.classList.toggle("row-filtered", !show);
+  });
+  // 筛选后若一条都不剩，补一句提示
+  const anyVisible = Array.from(tb.querySelectorAll("tr[data-status]")).some(
+    (tr) => !tr.classList.contains("row-filtered")
+  );
+  let note = tb.querySelector(".filter-empty-note");
+  if (!anyVisible && tb.querySelectorAll("tr[data-status]").length > 0) {
+    if (!note) {
+      note = document.createElement("tr");
+      note.className = "empty-row filter-empty-note";
+      note.innerHTML = `<td colspan="5">当前筛选下没有匹配的文件。</td>`;
+      tb.appendChild(note);
+    }
+  } else if (note) {
+    note.remove();
+  }
 }
 
 /* ==================== 模态框 ==================== */

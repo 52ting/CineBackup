@@ -465,6 +465,118 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
   }
 
 
+  // ?filtertest=1 → 回归场景：结果表筛选（全部/通过/失败/跳过）+ 底部拖高。
+  // 断言四组：失败筛选只剩失败行 / 通过筛选只剩通过行 / 切回全部全可见 / 拖动分隔条后高度真的变了且被记住。
+  if (qs.has("filtertest")) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const fire = (el, type, y) =>
+      el.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true, cancelable: true,
+          clientX: 640, clientY: y, pointerId: 7, pointerType: "mouse", isPrimary: true,
+        })
+      );
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      await sleep(500);
+      const ROWS = [
+        { path: "D:\\\\src\\\\A001.R3D", status: "pass", hash: "aa" },
+        { path: "D:\\\\src\\\\A002.R3D", status: "pass", hash: "bb" },
+        { path: "D:\\\\src\\\\bad：name.psd", status: "error",
+          msg: "拷贝失败：Illegal byte sequence (os error 92)（文件名含非法/不可见字符，转义后：「bad\\u003aname.psd」）" },
+        { path: "D:\\\\src\\\\same.mov", status: "skip", msg: "跳过（内容一致）" },
+      ];
+      ROWS.forEach((r, i) =>
+        setTimeout(() =>
+          window.__cbEmit("cb:file-result", {
+            path: r.path, target: "E:\\\\dst\\\\x", size: 1024, status: r.status,
+            srcHash: r.hash ? r.hash.repeat(32) : "",
+            dstHash: r.hash ? r.hash.repeat(32) : "",
+            message: r.msg || "SHA-256 校验一致",
+          }), 200 + i * 150)
+      );
+      await sleep(1400);
+
+      const vis = () =>
+        Array.from(document.querySelectorAll("#resultTbody tr[data-status]"))
+          .filter((tr) => !tr.classList.contains("row-filtered"))
+          .map((tr) => tr.dataset.status);
+      const clickFlt = (f) =>
+        document.querySelector('#resultFilter .flt[data-f="' + f + '"]').click();
+
+      const allView0 = vis();
+      clickFlt("fail");
+      const failView = vis();
+      const failActive = document.querySelector('#resultFilter .flt[data-f="fail"]').classList.contains("active");
+      clickFlt("pass");
+      const passView = vis();
+      clickFlt("skip");
+      const skipView = vis();
+      clickFlt("all");
+      const allView1 = vis();
+
+      // 筛选状态下的新行：fail 筛选中再来一条 pass → 应被隐藏，不出现在视野里
+      clickFlt("fail");
+      window.__cbEmit("cb:file-result", {
+        path: "D:\\\\src\\\\late.R3D", target: "E:\\\\dst\\\\late", size: 1,
+        status: "pass", srcHash: "cc".repeat(32), dstHash: "cc".repeat(32), message: "SHA-256 校验一致",
+      });
+      await sleep(120);
+      const lateVisible = vis().includes("pass");
+      clickFlt("all");
+
+      // 拖动分隔条：往上拖 130px → 底部变高，且高度被写进 localStorage
+      const bar = document.getElementById("bottomResizer");
+      const panel = document.getElementById("bottomPanel");
+      const h0 = Math.round(panel.getBoundingClientRect().height);
+      fire(bar, "pointerdown", 800);
+      fire(bar, "pointermove", 800 - 130);
+      fire(bar, "pointerup", 800 - 130);
+      const h1 = Math.round(panel.getBoundingClientRect().height);
+      const saved = Number(localStorage.getItem("cinebackup.bottomH"));
+      const bodyClean = !document.body.classList.contains("resizing-bottom");
+
+      // 复位（把测试写的高度擦掉，免得影响后续截图）
+      localStorage.removeItem("cinebackup.bottomH");
+      panel.style.height = "";
+
+      // 截图模式（?filtertest=1 但没有 probe=1）：把界面留在「失败筛选 + 拖高」状态
+      if (!qs.has("probe")) {
+        clickFlt("fail");
+        panel.style.height = "360px";
+        document.title = "FILTERTEST_SHOT";
+        return;
+      }
+
+      const pre = document.createElement("pre");
+      pre.id = "probeOut";
+      pre.textContent = JSON.stringify(
+        {
+          全部初始: allView0,
+          失败筛选: failView,
+          失败按钮高亮: failActive,
+          通过筛选: passView,
+          跳过筛选: skipView,
+          切回全部: allView1,
+          筛选中新增pass行是否被藏住: !lateVisible,
+          拖高前: h0,
+          拖高后: h1,
+          localStorage记录: saved,
+          拖后body状态干净: bodyClean,
+          计数: {
+            pass: document.getElementById("cntPass").textContent,
+            fail: document.getElementById("cntFail").textContent,
+            skip: document.getElementById("cntSkip").textContent,
+          },
+        },
+        null,
+        2
+      );
+      document.body.appendChild(pre);
+      document.title = "PROBE_DONE";
+    });
+  }
+
   // ?scan=1 → 预扫描进行中：中栏每行不该显示「排队中」，而是
   // 当前那行「正在扫描…」+ 流动条纹，其余「预扫描中…」。
   // （0.4.3 之前这段时间整列都是「排队中」，用户误以为卡死了。）
@@ -730,11 +842,25 @@ def main():
         action="store_true",
         help="打开「任务选项」下拉（核对校验算法选择器）",
     )
+    ap.add_argument(
+        "--filtertest",
+        action="store_true",
+        help="跑 ?filtertest=1：结果表筛选 + 底部拖高 的回归断言（不截图）",
+    )
     args = ap.parse_args()
+
+    if args.filtertest:
+        # --filtertest --shot：截「失败筛选 + 拖高」的图；否则当 probe 跑断言
+        if not args.shot:
+            args.probe = True
+        args.run = args.dnd = args.drop = False
 
     if args.probe or args.queuetest:
         # 回归场景固定需要：运行中 + 往左栏拖一次（新源）+ 排队探针
         args.run = args.dnd = args.drop = True
+    if args.filtertest:
+        # 筛选/拖高场景只关心底部面板，不需要跑任务
+        args.run = args.dnd = args.drop = False
 
     if args.out:
         out = args.out
@@ -778,7 +904,9 @@ def main():
         args.run = True  # 复用「运行中」的数据铺垫，界面才会切到传输视图
     if args.opts:
         parts.append("opts=1")
-    if args.probe or args.queuetest:
+    if args.filtertest:
+        parts.append("filtertest=1")
+    if args.queuetest or (args.probe and not args.filtertest):
         parts.append("queuetest=1")
     if args.probe:
         parts.append("probe=1")

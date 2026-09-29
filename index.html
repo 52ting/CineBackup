@@ -152,7 +152,8 @@
     </main>
 
     <!-- ==================== 底部：日志 / 校验结果 ==================== -->
-    <footer class="bottom">
+    <div class="bottom-resizer" id="bottomResizer" title="拖动调整下方区域高度"></div>
+    <footer class="bottom" id="bottomPanel">
       <section class="card area-log">
         <div class="card-head">
           <h2>运行日志</h2>
@@ -167,10 +168,18 @@
       <section class="card area-result">
         <div class="card-head">
           <h2>校验结果</h2>
-          <div class="result-summary" id="resultSummary">
-            <span class="tag ok">✅ 通过 <b id="cntPass">0</b></span>
-            <span class="tag bad">❌ 失败 <b id="cntFail">0</b></span>
-            <span class="tag skip">⏭ 跳过 <b id="cntSkip">0</b></span>
+          <div class="result-head-right">
+            <div class="result-filter" id="resultFilter">
+              <button class="flt active" data-f="all">全部</button>
+              <button class="flt" data-f="pass">通过</button>
+              <button class="flt" data-f="fail">失败</button>
+              <button class="flt" data-f="skip">跳过</button>
+            </div>
+            <div class="result-summary" id="resultSummary">
+              <span class="tag ok">✅ 通过 <b id="cntPass">0</b></span>
+              <span class="tag bad">❌ 失败 <b id="cntFail">0</b></span>
+              <span class="tag skip">⏭ 跳过 <b id="cntSkip">0</b></span>
+            </div>
           </div>
         </div>
         <div class="table-wrap result-wrap">

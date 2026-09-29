@@ -581,10 +581,29 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 }
 
 /* ============================================================ 底部：日志 / 校验 */
+/* 可拖动分隔条：上下拖动调整底部区域（日志 + 结果）的高度 */
+.bottom-resizer {
+  flex: none; height: 7px; cursor: ns-resize;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; position: relative; z-index: 5;
+}
+.bottom-resizer::after {
+  content: ""; width: 44px; height: 3px; border-radius: 2px;
+  background: var(--border-strong);
+  transition: background .12s;
+}
+.bottom-resizer:hover::after,
+.bottom-resizer.dragging::after { background: var(--primary); }
+body.resizing-bottom {
+  cursor: ns-resize; user-select: none;
+}
+body.resizing-bottom * { pointer-events: none; }
+
 .bottom {
   display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr);
   gap: 10px; padding: 10px 12px 12px;
   height: 196px; flex: none;
+  /* 高度由 JS 通过 --bottom-h 覆盖（拖动时），默认仍是 196px */
 }
 .card {
   background: var(--panel);
@@ -639,7 +658,17 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 .log .lv-error { color: var(--danger); }
 
 /* ---------- 校验结果 ---------- */
+.result-head-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.result-filter { display: flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 2px; }
+.result-filter .flt {
+  border: 0; background: transparent; color: var(--text-dim);
+  font-size: 11px; padding: 3px 10px; border-radius: 5px; cursor: pointer;
+  font-family: inherit; white-space: nowrap;
+}
+.result-filter .flt:hover { color: var(--text); }
+.result-filter .flt.active { background: var(--primary); color: #fff; font-weight: 600; }
 .result-summary { display: flex; gap: 6px; }
+.result-summary .tag { white-space: nowrap; }
 .tag { padding: 2px 9px; border-radius: 999px; font-size: 11px; border: 1px solid transparent; }
 .tag.ok { background: rgba(31, 157, 85, .14); color: var(--ok); }
 .tag.bad { background: rgba(217, 59, 59, .14); color: var(--danger); }
@@ -647,6 +676,8 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 tr.row-fail td { background: rgba(217, 59, 59, .09); color: var(--danger); }
 tr.row-pass td { color: var(--text); }
 tr.row-skip td { color: var(--text-mute); }
+/* 结果表筛选：非当前筛选状态的行隐藏 */
+tr.row-filtered { display: none; }
 .st-pass { color: var(--ok); font-weight: 700; }
 .st-fail { color: var(--danger); font-weight: 700; }
 .st-skip { color: var(--text-dim); }

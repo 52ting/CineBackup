@@ -32,6 +32,8 @@ pub struct Plan {
     pub stats: PlanStats,
     /// 非致命警告（源缺失、重复目标等）
     pub warnings: Vec<String>,
+    /// 目标文件系统大概率存不下的名字（开拷前一次性报给用户）
+    pub name_issues: Vec<crate::namecheck::NameIssue>,
     pub cancelled: bool,
 }
 
@@ -51,6 +53,7 @@ pub fn build_plan(
         dirs: Vec::new(),
         stats: PlanStats::default(),
         warnings: Vec::new(),
+        name_issues: Vec::new(),
         cancelled: false,
     };
 
@@ -104,6 +107,9 @@ pub fn build_plan(
             PathKind::File => {
                 let dst = target.join(file_name_of(&src_root));
                 let size = walk::file_size(&src_root);
+                // 只查「文件名」这一层，别把盘符/绝对路径前缀（Windows 的 C:）也当坏名字
+                let leaf = file_name_of(&src_root);
+                check_name_recursive(&mut plan, Path::new(&leaf));
                 push_unique(&mut raw, &mut seen_dst, &mut plan, &src_root, dst, size, src_idx);
                 sp.files_seen += 1;
                 sp.current = path_to_string(&src_root);
@@ -126,11 +132,15 @@ pub fn build_plan(
                             join_relative(&dst_root, &rel)
                         };
                         plan.dirs.push(d);
+                        if !rel.as_os_str().is_empty() {
+                            check_name_recursive(&mut plan, &rel);
+                        }
                         sp.dirs_seen += 1;
                     } else {
                         let rel = walk::relative_to(&src_root, p);
                         let d = join_relative(&dst_root, &rel);
                         let size = walk::file_size(p);
+                        check_name_recursive(&mut plan, &rel);
                         sp.files_seen += 1;
                         sp.current = path_to_string(p);
                         local.push((p.to_path_buf(), d, size, src_idx));
@@ -292,6 +302,36 @@ pub fn build_plan(
     }
     plan.stats = st;
     Ok(plan)
+}
+
+/// 逐个路径组件检查名字，命中的问题汇总进 `plan.name_issues`。
+///
+/// 检查的是「相对源根」的每一段（文件名 + 各级父目录名），因为目标路径就是
+/// `目标根 + 这段相对路径`，源侧名字有问题目标侧必然继承同一份。
+/// 同一段坏名字（如同一目录下的多级父目录名）只记录一次，靠 `name_display` 去重。
+fn check_name_recursive(plan: &mut Plan, rel: &Path) {
+    for comp in rel.components() {
+        let os = comp.as_os_str();
+        if os.is_empty() {
+            continue;
+        }
+        if let Some((name_display, reasons, suggestion)) = crate::namecheck::check_name(os) {
+            // 用「那段名字本身」作为去重键：同名坏目录下的多个文件只报一次
+            if plan
+                .name_issues
+                .iter()
+                .any(|i| i.name_display == name_display && i.reasons == reasons)
+            {
+                continue;
+            }
+            plan.name_issues.push(crate::namecheck::NameIssue {
+                path: path_to_string(rel),
+                name_display,
+                reasons,
+                suggestion,
+            });
+        }
+    }
 }
 
 /// 目标路径去重：同一个目标被两个源命中时，只保留第一个，其余忽略并警告

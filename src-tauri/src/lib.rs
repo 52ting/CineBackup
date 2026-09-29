@@ -19,6 +19,7 @@ pub mod engine;
 pub mod events;
 pub mod fsinfo;
 pub mod hash;
+pub mod namecheck;
 pub mod scan;
 pub mod state;
 pub mod task;

@@ -1054,6 +1054,62 @@ function subscribe() {
   });
 }
 
+/* ==================== 底部区域拖动调整高度 ==================== */
+const BOTTOM_H_KEY = "cinebackup.bottomH";
+const BOTTOM_MIN = 120;
+const BOTTOM_MAX = 520;
+
+function initBottomResize() {
+  const bar = $("bottomResizer");
+  const panel = $("bottomPanel");
+  if (!bar || !panel) return;
+
+  // 恢复上次拖动的高度（存的是「从窗口底边往上的高度」，即面板高度）
+  const saved = Number(localStorage.getItem(BOTTOM_H_KEY));
+  if (Number.isFinite(saved) && saved >= BOTTOM_MIN && saved <= BOTTOM_MAX) {
+    panel.style.height = `${saved}px`;
+  }
+
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+
+  bar.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startH = panel.getBoundingClientRect().height;
+    bar.classList.add("dragging");
+    document.body.classList.add("resizing-bottom");
+    // 捕获指针，拖出滑条范围也不丢事件；headless / 异常指针下可能失败，别让它炸
+    try {
+      bar.setPointerCapture(e.pointerId);
+    } catch {
+      /* 忽略：没有活动指针时捕获不到，靠 move 事件仍然工作 */
+    }
+  });
+
+  bar.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    // 往上拖（clientY 变小）→ 高度变大
+    const h = startH + (startY - e.clientY);
+    const clamped = Math.min(BOTTOM_MAX, Math.max(BOTTOM_MIN, h));
+    panel.style.height = `${clamped}px`;
+  });
+
+  const finish = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    bar.classList.remove("dragging");
+    document.body.classList.remove("resizing-bottom");
+    const h = panel.getBoundingClientRect().height;
+    if (h >= BOTTOM_MIN && h <= BOTTOM_MAX) {
+      localStorage.setItem(BOTTOM_H_KEY, String(Math.round(h)));
+    }
+  };
+  bar.addEventListener("pointerup", finish);
+  bar.addEventListener("pointercancel", finish);
+}
+
 /* ==================== 按钮绑定 ==================== */
 $("btnAddSource").addEventListener("click", (ev) => {
   ev.stopPropagation();
@@ -1083,6 +1139,16 @@ $("btnCancel").addEventListener("click", cancel);
 $("btnSaveTask").addEventListener("click", saveTask);
 $("btnLoadTask").addEventListener("click", loadTask);
 $("btnClearLog").addEventListener("click", () => ui.clearLog());
+
+// 结果表筛选：单独看「通过 / 失败 / 跳过」
+$("resultFilter").addEventListener("click", (ev) => {
+  const b = ev.target.closest(".flt");
+  if (!b) return;
+  ui.setResultFilter(b.dataset.f);
+});
+
+// 底部区域拖动调整高度（日志 + 结果框整体变高变矮）
+initBottomResize();
 
 // 任务选项弹出面板
 $("btnOptions").addEventListener("click", (ev) => {

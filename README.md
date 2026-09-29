@@ -98,6 +98,12 @@ cinebackup/
 | 右 · 目标文件夹 | 目标路径、文件系统、剩余空间（只读盘给警示） | 虚线区可拖入；点磁盘卡换目标 |
 | 底部 · 校验结果 | 状态 / 文件 / 大小 / **校验值（SHA-256）** / 说明 | 校验值那格**单击即全选**，可 Ctrl+C 取走完整 64 位哈希 |
 
+- **底部区域高度可拖**：主区和底部之间有一条**拖动分隔条**（灰色小横条，悬停变蓝），
+  上下拖即可调整日志/结果框的整体高度（120–520px），记在 `localStorage`，下次启动保持。
+- **校验结果可按状态筛选**：结果表右上角有 **全部 / 通过 / 失败 / 跳过** 四个按钮，
+  点一下只看对应状态的文件；筛选状态下新进来的结果也会自动按规则显隐，计数不受筛选影响。
+  新一轮全量任务开表时自动复位到「全部」，不会让你漏看新结果。
+
 - **中栏是双态的**：空闲显示磁盘网格，开始备份即切到传输列表；点中栏右上角的 **⌄**
   可以随时在两者之间来回切（**任务运行中也能切回磁盘看剩余空间**，总进度条会一直留在下面）。
   箭头当前处于「可切换」状态时会高亮；空闲且没有传输行时，它退化成「收起 / 展开磁盘网格」。
@@ -272,6 +278,7 @@ python tools/preview_ui.py --serve         # 或者起 http://127.0.0.1:8765 自
 | `--dnd --drop` | 悬停 0.9 秒后真的松手投递一次，用来验证「落点到底判给了哪一侧」 |
 | `--probe` | 跑 `?queuetest=1` 回归场景（运行中加源 → 追加轮），用无头 Chrome dump DOM 后打印判定 JSON，**不截图** |
 | `--queuetest` | 配合 `--shot`：把「追加轮进行中」的样子截下来（上一轮的行与校验结果都还在） |
+| `--filtertest` | 结果表筛选 + 底部拖高的回归断言（配合 `--shot` 则截「失败筛选 + 拖高」状态图） |
 | `--width` / `--height` | 窗口尺寸（默认 1280×880） |
 
 ```bash
@@ -284,6 +291,8 @@ python tools/preview_ui.py --shot --dnd --drop --dnd-x 1150  # 右栏松手 → 
 python tools/preview_ui.py --shot --run --dnd --drop --dnd-x 300  # 运行中拖入左栏 → 应自动排队
 python tools/preview_ui.py --probe                         # 追加轮只补新源（打印 verdict 判定）
 python tools/preview_ui.py --shot --queuetest              # tools/ui-preview-queuetest-light.png
+python tools/preview_ui.py --filtertest                    # 筛选/拖高断言（打印 JSON）
+python tools/preview_ui.py --filtertest --shot --theme dark  # 「失败筛选 + 拖高」状态图
 ```
 
 `--probe` 是**回归探针**：脚本包一层 `window.__TAURI_INTERNALS__.invoke`，记下每次
@@ -295,6 +304,10 @@ python tools/preview_ui.py --shot --queuetest              # tools/ui-preview-qu
 | `中栏行数` = 7（3 老 + 4 新） | 追加轮整列替换会让上一轮的行消失 |
 | `结果表是否保留上一轮的校验值` | 追加轮清空结果表 = 用户看到「先拷的那个文件没有校验」 |
 | `第一轮是否被误标为追加` | 日志措辞串台会让人误以为第一轮也没全跑 |
+
+`--filtertest`（`?filtertest=1`）另有一组断言，钉住 0.5.0 的两个界面功能：
+筛选后视野里**只剩对应状态的行**、筛选状态下新进来的结果自动显隐、
+拖动分隔条后底部高度真的变化且写入 `localStorage`、拖完 `body` 上的拖拽态被清理干净。
 
 0.4.3 那个「排队了却没拷新素材」的 bug 就是先被它定位到「前端没问题、第二轮确实发了」
 （`startCallCount: 2`），再去后端找到真正的空转读取。
@@ -756,6 +769,29 @@ t15_every_file_boundary_forces_a_progress_report       # 每个文件边界一�
 
 **续传的物理保障**：每个文件写完（或中断）时都会 `flush + sync_all()`，
 已写入的数据真实落盘。硬盘中途被拔掉、程序被强杀，下次运行都能从断点接上。
+
+### 文件名预检：`Illegal byte sequence (os error 92)` 在开拷前就报出来（0.5.0）
+
+`Illegal byte sequence`（POSIX errno 92 = EILSEQ）的含义是**目标文件系统拒绝了这个路径名**，
+不是文件坏了、不是磁盘满、不是权限不足。`copy.rs` 的分块 `read`/`write_all`/`flush`/`sync_all`
+都不可能返回它 —— 能返回的只有路径名层的 `File::create` / `open` / `create_dir_all`。
+
+最常见的三个名字级原因（按命中率排序）：
+
+| # | 原因 | 说明 |
+|---|---|---|
+| 1 | 名字里有**冒号 `:`** | HFS+/APFS 允许，Finder 还把它**显示成 `/`**，Mac 上看不出问题；NTFS/exFAT 一律非法 → EILSEQ。`2024_9_17 10:30 拍摄.psd` 这类时间戳名是重灾区 |
+| 2 | 名字**不是合法 UTF-8** | 从 Windows/FAT/SMB 共享搬来的 GBK 名 |
+| 3 | 目标盘是**第三方 NTFS**（Paragon/Mounty） | 驱动在 UTF-8→UTF-16 转码时失败 |
+
+0.5.0 起**预扫描阶段逐个名字预检**（`namecheck.rs`，与 `tools/audit_names.py` 同一套规则），
+覆盖文件名与各级父目录名，六类问题：非 UTF-8 / 含 `<>:"/\|?*` / 控制字符 / 尾随空格或点 /
+超 255 字节 / Windows 保留名（CON、COM1…）。有问题时在开拷前于日志里逐条给出
+「哪个路径、名字哪里有问题、建议改成什么」，**不拦截**——文件仍按原样尝试拷贝。
+
+真失败了，错误信息也会带上下文：日志里有完整源路径 + **目标路径**；结果表该行的
+说明悬停可见目标路径，若文件名本身含非法/不可见字节，还会附上转义后的名字（如 `\u003a`），
+不再只有一个光秃秃的 `os error 92`。改名重跑即可，半截文件会自动续传。
 
 ---
 

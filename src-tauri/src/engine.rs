@@ -139,6 +139,40 @@ fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, St
     for w in &plan.warnings {
         events::emit_log(app, "warn", w.clone());
     }
+
+    // 文件名预检：目标文件系统大概率存不下的名字，开拷前一次性报出来，
+    // 免得拷到一半才因为 EILSEQ 失败（见 namecheck.rs 模块注释）。
+    if !plan.name_issues.is_empty() {
+        events::emit_log(
+            app,
+            "warn",
+            format!(
+                "文件名预检：发现 {} 个名字目标盘可能存不下（含冒号 :、非 UTF-8、控制字符、尾随空格/点、超长或 Windows 保留名）。",
+                plan.name_issues.len()
+            ),
+        );
+        for issue in &plan.name_issues {
+            let why = issue
+                .reasons
+                .iter()
+                .map(|r| crate::namecheck::reason_label(r))
+                .collect::<Vec<_>>()
+                .join("、");
+            events::emit_log(
+                app,
+                "warn",
+                format!(
+                    "  · {}：名字「{}」{}，建议改为「{}」",
+                    issue.path, issue.name_display, why, issue.suggestion
+                ),
+            );
+        }
+        events::emit_log(
+            app,
+            "warn",
+            "  这些文件仍会按原样尝试拷贝；若失败，请按建议改名后重跑（半截文件会自动续传，不会重复拷）。",
+        );
+    }
     if plan.items.is_empty() {
         events::emit_log(app, "error", "没有找到任何可备份的文件。");
         events::emit_status(app, events::ST_IDLE);
@@ -624,10 +658,18 @@ fn run_copy_phase(
                     sp.state = "failed".into();
                 }
                 let err_text = e.to_string();
+                // 把源文件名里的不可见/非法字节转义出来，帮用户一眼看出「名字本身」的问题
+                let name_hint = crate::namecheck::check_name(Path::new(&src).file_name().unwrap_or_default())
+                    .map(|(disp, _, _)| format!("（文件名含非法/不可见字符，转义后：「{disp}」）"))
+                    .unwrap_or_default();
                 events::emit_log(
                     app,
                     "error",
-                    format!("拷贝失败：{} —— {err_text}", path_to_string(&src)),
+                    format!(
+                        "拷贝失败：{} —— {err_text}{name_hint}（目标：{}）",
+                        path_to_string(&src),
+                        path_to_string(&dst)
+                    ),
                 );
                 events::emit_file_result(
                     app,
@@ -638,7 +680,7 @@ fn run_copy_phase(
                         status: "error".into(),
                         src_hash: String::new(),
                         dst_hash: String::new(),
-                        message: format!("拷贝失败：{err_text}"),
+                        message: format!("拷贝失败：{err_text}{name_hint}"),
                     },
                 );
                 let reply = events::ask_user(

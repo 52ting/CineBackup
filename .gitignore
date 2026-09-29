@@ -26,6 +26,10 @@ Thumbs.db
 __pycache__/
 *.pyc
 
+# ---- 预览截图（preview_ui.py --shot 的临时验证产物，不入库）----
+tools/ui-preview*.png
+tools/_crop*.png
+
 # ---- 任务文件（个人路径，不入库）----
 task-*.json
 *.cinebackup.json
