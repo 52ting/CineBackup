@@ -773,7 +773,19 @@ fn run_copy_phase(
                     CopyErrorAsk {
                         src: path_to_string(&src),
                         dst: path_to_string(&dst),
-                        error: err_text,
+                        // 把字节转义也送进弹窗：EILSEQ 时即便日志面板被截，弹窗也是完整的。
+                        // 用 err_text 双重兜底（包含 byte sequence 子串即视作 EILSEQ），
+                        // 因为某些情况下 raw_os_error() 被包装后返回 None。
+                        error: if e.raw_os_error() == Some(92)
+                            || err_text.to_lowercase().contains("byte sequence")
+                        {
+                            format!(
+                                "{err_text}\n  目标路径字节：{}",
+                                escape_path_bytes(&dst)
+                            )
+                        } else {
+                            err_text.clone()
+                        },
                         done: files_done,
                         total: files_total,
                     },

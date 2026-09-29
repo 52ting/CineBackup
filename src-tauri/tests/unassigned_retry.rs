@@ -60,6 +60,70 @@ fn accepts_normal_and_assigned_codepoints() {
 }
 
 #[test]
+fn rejects_control_chars() {
+    // v0.5.2 漏掉的 Cf/Cc 字符 —— v0.5.3 起也走自动重试
+    assert!(is_rejected(0x0001));
+    assert!(is_rejected(0x001F));
+    assert!(is_rejected(0x007F)); // DEL
+    assert!(is_rejected(0x009F));
+}
+
+#[test]
+fn rejects_format_chars_zero_width_and_bidi() {
+    // 实测 v0.5.2 漏掉的根因：目标路径里嵌入 ZERO WIDTH SPACE / Bidi 控制
+    assert!(is_rejected(0x200B)); // ZERO WIDTH SPACE
+    assert!(is_rejected(0x200C)); // ZWNJ
+    assert!(is_rejected(0x200D)); // ZWJ
+    assert!(is_rejected(0x200E)); // LRM
+    assert!(is_rejected(0x200F)); // RLM
+    assert!(is_rejected(0x202A)); // LRE
+    assert!(is_rejected(0x202E)); // RLO
+    assert!(is_rejected(0x2060)); // WORD JOINER
+    assert!(is_rejected(0xFEFF)); // BOM
+    assert!(is_rejected(0xFFF9)); // INTERLINEAR ANNOTATION
+}
+
+#[test]
+fn path_with_zero_width_space_is_detected() {
+    // 用户实机报错路径的真实形态：名字里嵌了一个 ZERO WIDTH SPACE，
+    // 渲染时与正常冒号「:」混在一起看不出问题。
+    // 中文环境下这常来自剪切板复制时附带隐式格式。
+    let s = if cfg!(windows) {
+        "C:\\X\\2024_11_14 \u{62d9}\u{7259}\u{9f50}\u{200B}\u{ff1a}\u{8fdb}\u{6751}\\Cam A.mxf"
+    } else {
+        "/Volumes/X/2024_11_14 \u{62d9}\u{7259}\u{9f50}\u{200B}\u{ff1a}\u{8fdb}\u{6751}/Cam A.mxf"
+    };
+    let p = std::path::Path::new(s);
+    assert!(
+        path_has_rejected_codepoint(p),
+        "含 ZERO WIDTH SPACE (U+200B) 的路径应被识别"
+    );
+}
+
+#[test]
+fn sanitize_strips_zero_width_space() {
+    let s = if cfg!(windows) {
+        "C:\\Cam\\Cat\u{200B}A.mxf"
+    } else {
+        "/Volumes/X/Cat\u{200B}A.mxf"
+    };
+    let p = std::path::Path::new(s);
+    let out = sanitize_path_for_filesystem(p);
+    let out_text = out.to_string_lossy();
+    assert!(
+        !path_has_rejected_codepoint(&out),
+        "清洗后应无被拒码位，实际：{}",
+        out_text
+    );
+    assert!(
+        !out_text.contains('\u{200B}'),
+        "U+200B 应被替换为 U+FFFD，实际：{}",
+        out_text
+    );
+    assert!(out_text.contains("Cat"), "Cat 部分保留, 实际：{}", out_text);
+}
+
+#[test]
 fn clean_path_has_no_rejected_codepoint() {
     let p1 = std::path::Path::new(if cfg!(windows) {
         "C:\\Volumes\\X\\Cam A\\clip.mxf"

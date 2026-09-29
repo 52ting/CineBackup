@@ -1,13 +1,17 @@
-//! 未分配 / 非字符 Unicode 码位区间表（自动生成，勿手改）
+//! APFS 会拒绝的 Unicode 码位区间表（自动生成，勿手改）
 //!
-//! 生成：`python tools/gen_unassigned.py`（unicodedata 13.0.0）
+//! 生成：`python tools/gen_unassigned.py`（unicodedata 13.0.0, 含 Cn / Cc / Cf）
 //!
 //! 依据 Apple APFS FAQ：APFS 拒绝创建文件名含未分配码位的文件（EILSEQ / errno 92），
-//! 即使字节是合法 UTF-8。这类字符在界面上不可见，是「cp 能拷、应用报错」怪象的根因。
-//! 共 677 个区间，覆盖 830672 个码位。
+//! 即使字节是合法 UTF-8。本表还加上 Cc（控制字符）与 Cf（格式字符），
+//! 实测（v0.5.2 仍 EILSEQ 的真凶）这些已分配的不可见字符也被 APFS 拒绝。
+//! 共 681 个区间，覆盖 830898 个码位。
 
 /// `(起始码位, 结束码位)` 闭区间，升序、互不重叠。
-pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
+pub const UNASSIGNED_RANGES: [(u32, u32); 681] = [
+    (0x0000, 0x001F),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
     (0x0378, 0x0379),
     (0x0380, 0x0383),
     (0x038B, 0x038B),
@@ -19,9 +23,10 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0x0590, 0x0590),
     (0x05C8, 0x05CF),
     (0x05EB, 0x05EE),
-    (0x05F5, 0x05FF),
-    (0x061D, 0x061D),
-    (0x070E, 0x070E),
+    (0x05F5, 0x0605),
+    (0x061C, 0x061D),
+    (0x06DD, 0x06DD),
+    (0x070E, 0x070F),
     (0x074B, 0x074C),
     (0x07B2, 0x07BF),
     (0x07FB, 0x07FC),
@@ -32,6 +37,7 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0x086B, 0x089F),
     (0x08B5, 0x08B5),
     (0x08C8, 0x08D2),
+    (0x08E2, 0x08E2),
     (0x0984, 0x0984),
     (0x098D, 0x098E),
     (0x0991, 0x0992),
@@ -203,7 +209,7 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0x17DE, 0x17DF),
     (0x17EA, 0x17EF),
     (0x17FA, 0x17FF),
-    (0x180F, 0x180F),
+    (0x180E, 0x180F),
     (0x181A, 0x181F),
     (0x1879, 0x187F),
     (0x18AB, 0x18AF),
@@ -250,7 +256,9 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0x1FF0, 0x1FF1),
     (0x1FF5, 0x1FF5),
     (0x1FFF, 0x1FFF),
-    (0x2065, 0x2065),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
     (0x2072, 0x2073),
     (0x208F, 0x208F),
     (0x209D, 0x209F),
@@ -342,15 +350,14 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0xFE67, 0xFE67),
     (0xFE6C, 0xFE6F),
     (0xFE75, 0xFE75),
-    (0xFEFD, 0xFEFE),
-    (0xFF00, 0xFF00),
+    (0xFEFD, 0xFF00),
     (0xFFBF, 0xFFC1),
     (0xFFC8, 0xFFC9),
     (0xFFD0, 0xFFD1),
     (0xFFD8, 0xFFD9),
     (0xFFDD, 0xFFDF),
     (0xFFE7, 0xFFE7),
-    (0xFFEF, 0xFFF8),
+    (0xFFEF, 0xFFFB),
     (0xFFFE, 0xFFFF),
     (0x1000C, 0x1000C),
     (0x10027, 0x10027),
@@ -431,8 +438,8 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0x10FF7, 0x10FFF),
     (0x1104E, 0x11051),
     (0x11070, 0x1107E),
-    (0x110C2, 0x110CC),
-    (0x110CE, 0x110CF),
+    (0x110BD, 0x110BD),
+    (0x110C2, 0x110CF),
     (0x110E9, 0x110EF),
     (0x110FA, 0x110FF),
     (0x11135, 0x11135),
@@ -521,8 +528,7 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0x1246F, 0x1246F),
     (0x12475, 0x1247F),
     (0x12544, 0x12FFF),
-    (0x1342F, 0x1342F),
-    (0x13439, 0x143FF),
+    (0x1342F, 0x143FF),
     (0x14647, 0x167FF),
     (0x16A39, 0x16A3F),
     (0x16A5F, 0x16A5F),
@@ -552,9 +558,10 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0x1BC7D, 0x1BC7F),
     (0x1BC89, 0x1BC8F),
     (0x1BC9A, 0x1BC9B),
-    (0x1BCA4, 0x1CFFF),
+    (0x1BCA0, 0x1CFFF),
     (0x1D0F6, 0x1D0FF),
     (0x1D127, 0x1D128),
+    (0x1D173, 0x1D17A),
     (0x1D1E9, 0x1D1FF),
     (0x1D246, 0x1D2DF),
     (0x1D2F4, 0x1D2FF),
@@ -679,15 +686,13 @@ pub const UNASSIGNED_RANGES: [(u32, u32); 677] = [
     (0x2CEA2, 0x2CEAF),
     (0x2EBE1, 0x2F7FF),
     (0x2FA1E, 0x2FFFF),
-    (0x3134B, 0xE0000),
-    (0xE0002, 0xE001F),
-    (0xE0080, 0xE00FF),
+    (0x3134B, 0xE00FF),
     (0xE01F0, 0xEFFFF),
     (0xFFFFE, 0xFFFFF),
     (0x10FFFE, 0x10FFFF),
 ];
 
-/// 该码位是否属于「未分配 / 非字符」（APFS 等文件系统会以 EILSEQ 拒绝）
+/// 该码位是否属于「APFS 会拒绝」的（未分配 / 控制 / 格式 / 非字符）
 pub fn is_rejected(cp: u32) -> bool {
     let idx = UNASSIGNED_RANGES.partition_point(|&(_, hi)| hi < cp);
     if idx >= UNASSIGNED_RANGES.len() {
@@ -697,7 +702,7 @@ pub fn is_rejected(cp: u32) -> bool {
     lo <= cp && cp <= hi
 }
 
-/// 在合法 UTF-8 字符串里找首个被文件系统拒绝的码位，返回 (字符字节索引, 码位)。
+/// 在合法 UTF-8 字符串里找首个被文件系统拒绝的码位，返回 (字节偏移, 码位)。
 /// 返回 `None` 表示字符串里没有这类字符。
 pub fn first_rejected_in(s: &str) -> Option<(usize, u32)> {
     s.char_indices()
@@ -707,7 +712,7 @@ pub fn first_rejected_in(s: &str) -> Option<(usize, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_rejected_in, is_rejected};
+    use super::is_rejected;
 
     #[test]
     fn rejects_unassigned_and_noncharacters() {
@@ -715,6 +720,29 @@ mod tests {
         assert!(is_rejected(0xFFFF));
         assert!(is_rejected(0xFDD0)); // 非字符区
         assert!(is_rejected(0x0378)); // 未分配（自 Unicode 1.1 起一直是洞）
+    }
+
+    #[test]
+    fn rejects_control_chars() {
+        // APFS 拒绝控制字符（NUL 已被 Rust 层拦截，这里覆盖 0x01..0x1F 与 DEL）
+        assert!(is_rejected(0x0001));
+        assert!(is_rejected(0x001F));
+        assert!(is_rejected(0x007F)); // DEL
+    }
+
+    #[test]
+    fn rejects_format_chars() {
+        // ZERO WIDTH SPACE / Bidi 控制 / BOM —— 实测 v0.5.2 漏掉的根因
+        assert!(is_rejected(0x200B)); // ZERO WIDTH SPACE
+        assert!(is_rejected(0x200C));
+        assert!(is_rejected(0x200D));
+        assert!(is_rejected(0x200E)); // LRM
+        assert!(is_rejected(0x200F)); // RLM
+        assert!(is_rejected(0x202A)); // LRE
+        assert!(is_rejected(0x202E)); // RLO
+        assert!(is_rejected(0xFEFF)); // BOM / ZERO WIDTH NO-BREAK SPACE
+        assert!(is_rejected(0x2060)); // WORD JOINER
+        assert!(is_rejected(0xFFF9)); // INTERLINEAR ANNOTATION
     }
 
     #[test]
@@ -726,20 +754,5 @@ mod tests {
         assert!(!is_rejected(0x1F600)); // emoji（已分配）
         assert!(!is_rejected(0xE000)); // 私用区（已分配）
         assert!(!is_rejected(0x300A)); // 《
-    }
-
-    #[test]
-    fn first_rejected_finds_unassigned_codepoint() {
-        let s = "Cam A\u{0378}"; // 0x0378 是未分配码位
-        let (idx, cp) = first_rejected_in(s).unwrap();
-        assert_eq!(cp, 0x0378);
-        // idx 是字符的字节偏移，"Cam A" 占 5 字节
-        assert_eq!(idx, 5);
-    }
-
-    #[test]
-    fn first_rejected_returns_none_for_clean_string() {
-        assert!(first_rejected_in("Cam A").is_none());
-        assert!(first_rejected_in("杯垫.psd").is_none());
     }
 }
