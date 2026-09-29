@@ -55,6 +55,10 @@ jobs:
       - name: 安装前端依赖
         run: npm ci || npm install
 
+      - name: 运行后端测试（含 non_utf8_path 等 #[cfg(unix)] 回归）
+        working-directory: src-tauri
+        run: cargo test
+
       - name: 打包（通用二进制）
         if: ${{ github.event_name == 'push' || inputs.universal }}
         run: npm run tauri build -- --target universal-apple-darwin
