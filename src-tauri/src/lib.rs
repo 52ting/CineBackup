@@ -24,6 +24,7 @@ pub mod scan;
 pub mod state;
 pub mod task;
 pub mod types;
+pub mod unassigned;
 pub mod util;
 pub mod verify;
 pub mod walk;

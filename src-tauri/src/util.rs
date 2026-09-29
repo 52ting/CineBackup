@@ -113,6 +113,125 @@ pub fn join_relative(root: &Path, rel: &Path) -> PathBuf {
     out
 }
 
+/// 把路径里的原始字节转义出来（用于报错日志）：
+/// - 可打印 ASCII 原样保留，`/` 与 `\` 作为路径分隔符也保留（便于和路径字面字符串对照）
+/// - 其它字节以 `\xHH` 输出
+/// - 路径组件固定用 `/` 连起来（log 跨平台一致，便于人眼对照）
+///
+/// 例（macOS）：路径里有 `Cam A\u{0378}/A.mxf` → `Cam A\xCE\xB8/A.mxf`
+pub fn escape_path_bytes(p: &Path) -> String {
+    use std::path::Component;
+    let mut out = String::new();
+    for (i, comp) in p.components().enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        #[cfg(unix)]
+        let bytes: Vec<u8> = {
+            use std::os::unix::ffi::OsStrExt;
+            match comp {
+                Component::Normal(s) => s.as_bytes().to_vec(),
+                Component::Prefix(p) => p.as_os_str().as_bytes().to_vec(),
+                Component::RootDir => vec![b'/'],
+                _ => continue,
+            }
+        };
+        #[cfg(not(unix))]
+        let bytes: Vec<u8> = {
+            let s = match comp {
+                Component::Normal(s) => s,
+                Component::Prefix(p) => p.as_os_str(),
+                Component::RootDir => std::ffi::OsStr::new("/"),
+                _ => continue,
+            };
+            // Windows 上 OsStr 是 UTF-16，无法拿到原始字节；
+            // 用 lossy 转码后拿到 UTF-8 字节（已分配的字符会被保留）
+            s.to_string_lossy().into_owned().into_bytes()
+        };
+        for b in bytes {
+            if (0x20..=0x7e).contains(&b) {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("\\x{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
+/// 把路径里"合法 UTF-8 中的被文件系统拒绝的码位"全部替换为 U+FFFD（`�`），
+/// 用于拷贝遇 EILSEQ 时的自动重试。
+///
+/// - **不**尝试对"非法 UTF-8 字节"做任何处理：那类是用户源里跨过来的，由原始字节
+///   直接交给 `File::create` 决定是否接收（之前的设计）
+/// - 空组件保持空
+/// - 如果组件已经是合法 UTF-8 且不含被拒码位，**原样返回**（不做无谓的克隆）
+pub fn sanitize_path_for_filesystem(p: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    let mut changed = false;
+    for comp in p.components() {
+        match comp {
+            Component::Normal(s) => {
+                let text = osstr_to_str(s);
+                if !crate::unassigned::first_rejected_in(&text).is_some() {
+                    out.push(s);
+                } else {
+                    let mut replaced = String::with_capacity(text.len());
+                    for ch in text.chars() {
+                        if crate::unassigned::is_rejected(ch as u32) {
+                            replaced.push('\u{fffd}');
+                        } else {
+                            replaced.push(ch);
+                        }
+                    }
+                    changed = true;
+                    out.push(std::ffi::OsStr::new(&replaced));
+                }
+            }
+            // 盘符（Windows `C:`）和根目录 `/` / 前缀 `\\?\` 不可能有名字问题，原样保留
+            _ => out.push(comp.as_os_str()),
+        }
+    }
+    if !changed {
+        p.to_path_buf()
+    } else {
+        out
+    }
+}
+
+/// `OsStr` → `String`：Unix 下走零拷贝的 `from_utf8`（合法就直接借用），Windows 上 lossy
+fn osstr_to_str(s: &std::ffi::OsStr) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let b = s.as_bytes();
+        std::str::from_utf8(b)
+            .map(|t| t.to_owned())
+            .unwrap_or_else(|_| String::from_utf8_lossy(b).into_owned())
+    }
+    #[cfg(not(unix))]
+    {
+        s.to_string_lossy().into_owned()
+    }
+}
+
+/// 判断路径里是否含合法 UTF-8 中的被拒码位（用于自动重试前的快速判别）
+pub fn path_has_rejected_codepoint(p: &Path) -> bool {
+    use std::path::Component;
+
+    for comp in p.components() {
+        if let Component::Normal(s) = comp {
+            let text = osstr_to_str(s);
+            if crate::unassigned::first_rejected_in(&text).is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 // ---------------------------------------------------------------- 展示
 
 pub fn human_bytes(n: u64) -> String {

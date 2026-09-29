@@ -29,7 +29,7 @@ use crate::state::AppState;
 use crate::types::{
     FileResult, JobEnd, JobOptions, JobRequest, PlanItem, PlannedAction, UserReply,
 };
-use crate::util::{human_bytes, path_to_string, RateMeter, Throttle};
+use crate::util::{escape_path_bytes, human_bytes, path_to_string, sanitize_path_for_filesystem, RateMeter, Throttle};
 use crate::verify;
 use crate::walk;
 
@@ -583,7 +583,11 @@ fn run_copy_phase(
 
         // ---- 真正拷贝 ----
         let mut file_written: u64 = 0;
-        let res = {
+        // 拷贝可能因为「目标文件名含 APFS 会拒绝的未分配 Unicode 码位」而 EILSEQ，
+        // 此时自动用清洗后的路径重试一次（替换被拒码位为 U+FFFD），并在 plan 里
+        // 记下「实际拷到的目标路径」，确保后续 verify 能找到。
+        let mut current_dst = dst.clone();
+        let mut res = {
             let mut on_bytes = |delta: u64| -> bool {
                 meter.add(delta);
                 file_written = file_written.saturating_add(delta);
@@ -608,11 +612,78 @@ fn run_copy_phase(
                 }
                 !st.cancelled()
             };
-            copy::copy_file(&src, &dst, mode, &st.cancel, &mut on_bytes)
+            copy::copy_file(&src, &current_dst, mode, &st.cancel, &mut on_bytes)
         };
+
+        // ---- 自动重试：遇 EILSEQ 且目标路径含被拒码位 ----
+        let mut retried = false;
+        let should_retry = matches!(res, Err(ref e) if e.raw_os_error() == Some(92))
+            && crate::util::path_has_rejected_codepoint(&current_dst)
+            && !st.cancelled();
+        if should_retry {
+            let sanitized = sanitize_path_for_filesystem(&current_dst);
+            if sanitized != current_dst {
+                events::emit_log(
+                    app,
+                    "warn",
+                    format!(
+                        "目标路径含 APFS 会拒绝的未分配 Unicode 码位，自动用清洗后的路径重试：\n  原：{}\n  新：{}",
+                        escape_path_bytes(&current_dst),
+                        path_to_string(&sanitized),
+                    ),
+                );
+                current_dst = sanitized.clone();
+                let mut on_bytes_retry = |delta: u64| -> bool {
+                    meter.add(delta);
+                    file_written = file_written.saturating_add(delta);
+                    bytes_done = bytes_done.saturating_add(delta);
+                    if let Some(sp) = src_prog.get_mut(si) {
+                        sp.bytes_done = sp.bytes_done.saturating_add(delta);
+                    }
+                    if throttle.ready() {
+                        emit_copy_progress(
+                            app,
+                            &mut meter,
+                            files_total,
+                            files_done,
+                            bytes_total,
+                            bytes_done,
+                            &plan.items[i].src,
+                            base + file_written,
+                            size,
+                            started,
+                            &src_prog,
+                        );
+                    }
+                    !st.cancelled()
+                };
+                res = copy::copy_file(&src, &current_dst, mode, &st.cancel, &mut on_bytes_retry);
+                if res.is_ok() {
+                    retried = true;
+                    // 用 sanitized 覆盖 plan，让 verify 找得到
+                    plan.items[i].dst_path = sanitized.clone();
+                } else {
+                    // 重试也失败 → 恢复原 dst 让错误信息打印原路径
+                    current_dst = dst.clone();
+                }
+            }
+        }
+        // 用最终目标路径回填 dst（保持后续 Ok 分支里 path_to_string(&dst) 也指向实际成功的路径）
+        let dst = current_dst;
 
         match res {
             Ok(o) => {
+                if retried {
+                    // 自动改名重试成功 → 后续 verify 用的是 dst_path（已覆盖），这里只补一行 OK 日志
+                    events::emit_log(
+                        app,
+                        "info",
+                        format!(
+                            "目标路径清洗后写入完成：{}（已自动替换未分配 Unicode 码位为 U+FFFD）",
+                            path_to_string(&dst)
+                        ),
+                    );
+                }
                 if o.restarted {
                     // 本想续传但目标不可续 → 之前记账的 base 需要退回
                     bytes_done = bytes_done.saturating_sub(base);
@@ -667,13 +738,20 @@ fn run_copy_phase(
                 let name_hint = crate::namecheck::check_name(Path::new(&src).file_name().unwrap_or_default())
                     .map(|(disp, _, _)| format!("（文件名含非法/不可见字符，转义后：「{disp}」）"))
                     .unwrap_or_default();
+                // EILSEQ 时把目标路径的原始字节转义出来 —— 这是定位「真凶字符」的关键证据
+                let dst_escaped = if e.raw_os_error() == Some(92) {
+                    format!("\n  目标路径字节：{}", escape_path_bytes(&dst))
+                } else {
+                    String::new()
+                };
                 events::emit_log(
                     app,
                     "error",
                     format!(
-                        "拷贝失败：{} —— {err_text}{name_hint}（目标：{}）",
+                        "拷贝失败：{} —— {err_text}{name_hint}（目标：{}{}）",
                         path_to_string(&src),
-                        path_to_string(&dst)
+                        path_to_string(&dst),
+                        dst_escaped,
                     ),
                 );
                 events::emit_file_result(

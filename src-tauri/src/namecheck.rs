@@ -42,6 +42,7 @@ pub fn reason_label(r: &str) -> &'static str {
         "trailing_dot" => "以空格或点结尾",
         "too_long_bytes" => "名字超过 255 字节",
         "win_reserved" => "是 Windows 保留设备名",
+        "unassigned" => "含 APFS 会拒绝的未分配 / 非字符 Unicode 码位（看似正常，实际 EILSEQ）",
         _ => "未知问题",
     }
 }
@@ -86,6 +87,9 @@ fn safe_name(text: &str) -> String {
         if WIN_ILLEGAL.contains(&ch) {
             out.push(if ch == ':' { '：' } else { '_' });
         } else if is_ctrl(ch) || ch == '\u{fffd}' {
+            continue;
+        } else if crate::unassigned::is_rejected(ch as u32) {
+            // APFS 会拒绝的未分配 / 非字符码位 → 静默删除（这些字符本身就是不可见的）
             continue;
         } else {
             out.push(ch);
@@ -152,6 +156,9 @@ pub fn check_name(raw: &std::ffi::OsStr) -> Option<(String, Vec<&'static str>, S
     if win_reserved(&stem) {
         reasons.push("win_reserved");
     }
+    if crate::unassigned::first_rejected_in(&text).is_some() {
+        reasons.push("unassigned");
+    }
 
     if reasons.is_empty() {
         return None;
@@ -212,6 +219,17 @@ mod tests {
         let raw = os_from_bytes(b"bad\xff\xfe.psd");
         let (_, reasons, _) = check_name(&raw).unwrap();
         assert!(reasons.contains(&"not_utf8"));
+    }
+
+    #[test]
+    fn unassigned_codepoint_flagged() {
+        // 名字中间嵌入一个未分配码位 U+0378（合法 UTF-8，但 APFS 会拒）
+        let (_, reasons, sug) = check_name(OsStr::new("Cam A\u{0378}")).unwrap();
+        assert!(reasons.contains(&"unassigned"));
+        // 建议名应清洗掉被拒码位，且再次过检必须干净
+        assert!(check_name(OsStr::new(&sug)).is_none());
+        assert!(!sug.contains('\u{0378}'));
+        assert!(sug.starts_with("Cam A"));
     }
 
     #[test]
