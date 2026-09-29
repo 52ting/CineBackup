@@ -107,3 +107,57 @@ fn clean_ascii_name_is_not_flagged() {
     let ok = std::ffi::OsStr::new("A032C001_241113Q2.MXF");
     assert!(cinebackup_lib::namecheck::check_name(ok).is_none(), "纯 ASCII 名不该被标记");
 }
+
+/// 冒号 `:` 单文件源：目标路径必须保留原始字节（不能经 file_name_of 的 lossy 污染）。
+/// 冒号在 APFS 里合法（Finder 显示成 `/`），所以 macOS 上能真正跑通并验证修复。
+/// 这是用户真实踩坑的字符（摄影师素材 `10:30 拍摄.psd` 这类时间戳名）。
+#[test]
+fn single_file_source_colon_name_keeps_raw_bytes() {
+    let root = std::env::temp_dir().join("cinebackup_colon_test");
+    let _ = fs::remove_dir_all(&root);
+
+    let src_dir = root.join("src");
+    let dst_dir = root.join("dst");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::create_dir_all(&dst_dir).unwrap();
+
+    // 源文件名含冒号（APFS 合法，NTFS/exFAT 会拒 —— 本测试只验证「路径字节不被 lossy 污染」）
+    let src_file = src_dir.join("shot_10:30 拍摄.psd");
+    let data = b"0123456789abcdef".repeat(100);
+    let mut f = fs::File::create(&src_file).unwrap();
+    f.write_all(&data).unwrap();
+    f.sync_all().unwrap();
+
+    let cancel = AtomicBool::new(false);
+    let opts = JobOptions::default();
+    // 单文件源：直接把文件路径作为 source（走 scan.rs 的 PathKind::File 分支）
+    let sources = vec![src_file.to_string_lossy().into_owned()];
+
+    let mut last = ScanProgress::default();
+    let plan = scan::build_plan(&sources, &dst_dir, &opts, &cancel, &mut |sp| {
+        last = sp.clone();
+    })
+    .expect("预扫描应成功");
+    assert_eq!(plan.items.len(), 1, "单文件源应枚举到 1 个文件");
+    assert_eq!(last.files_seen, 1);
+
+    let item = &plan.items[0];
+    // 核心断言：dst_path 的「文件名」必须仍是含冒号的原始字节，而不是被换成别的字符
+    let dst_name = item.dst_path.file_name().unwrap().to_string_lossy();
+    assert_eq!(dst_name, "shot_10:30 拍摄.psd", "目标文件名必须原样保留冒号（不能被 lossy 污染）");
+    // src_path 也应能 stat 到真实文件
+    assert!(item.src_path.exists(), "原始字节源路径应能命中真实文件");
+
+    // 拷贝 + 校验必须能过（APFS 上冒号合法）
+    let outcome = copy::copy_file_simple(&item.src_path, &item.dst_path, CopyMode::Fresh, &cancel)
+        .expect("冒号文件名必须照样能拷贝");
+    assert_eq!(outcome.written as usize, data.len());
+    assert!(item.dst_path.exists(), "目标文件应已落盘");
+
+    let (h_src, n_src) = hash::hash_file(&item.src_path, HashAlgo::Sha256, &cancel, |_| {}).unwrap();
+    let (h_dst, n_dst) = hash::hash_file(&item.dst_path, HashAlgo::Sha256, &cancel, |_| {}).unwrap();
+    assert_eq!(n_src, n_dst);
+    assert_eq!(h_src, h_dst, "内容哈希应一致");
+
+    let _ = fs::remove_dir_all(&root);
+}

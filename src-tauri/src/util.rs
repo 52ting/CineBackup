@@ -71,11 +71,20 @@ pub fn normalize_separators(s: &str) -> String {
     }
 }
 
-/// 取路径的最后一段（文件名 / 目录名）
+/// 取路径的最后一段（文件名 / 目录名），返回 lossy 字符串 —— **仅供展示**。
+/// ⚠️ 拼目标路径**不要**用这个：非法字节会被换成 `�`，导致目标路径从一开始就污染
+/// （单文件源场景踩过：`target.join(file_name_of(src))` → File::create 报 EILSEQ）。
 pub fn file_name_of(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path_to_string(p))
+}
+
+/// 取路径的最后一段，**保留原始字节**（`OsString`）—— 拼目标路径必须用这个。
+pub fn file_name_raw(p: &Path) -> std::ffi::OsString {
+    p.file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| p.as_os_str().to_os_string())
 }
 
 /// 判断是否像 macOS 的绝对路径（用于跨平台加载任务时提示）

@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::events::ScanProgress;
 use crate::hash;
 use crate::types::{JobOptions, PlanItem, PlanStats, PlannedAction};
-use crate::util::{file_name_of, join_relative, path_to_string};
+use crate::util::{file_name_of, file_name_raw, join_relative, path_to_string};
 use crate::walk::{self, PathKind};
 
 #[derive(Debug)]
@@ -105,7 +105,8 @@ pub fn build_plan(
                 continue;
             }
             PathKind::File => {
-                let dst = target.join(file_name_of(&src_root));
+                // 用原始字节拼目标路径：file_name_of 会把非法字节换成 �，导致 dst 从一开始就污染
+                let dst = target.join(file_name_raw(&src_root));
                 let size = walk::file_size(&src_root);
                 // 只查「文件名」这一层，别把盘符/绝对路径前缀（Windows 的 C:）也当坏名字
                 let leaf = file_name_of(&src_root);
@@ -116,8 +117,8 @@ pub fn build_plan(
                 progress(&sp);
             }
             PathKind::Dir => {
-                // 目录源：整体复制到 目标/目录名/...
-                let base_name = file_name_of(&src_root);
+                // 目录源：整体复制到 目标/目录名/...（原始字节）
+                let base_name = file_name_raw(&src_root);
                 let dst_root = target.join(&base_name);
                 plan.dirs.push(dst_root.clone());
 
