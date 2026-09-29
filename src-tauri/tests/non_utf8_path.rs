@@ -1,9 +1,15 @@
-//! 回归测试：文件名含非法 UTF-8 字节（Mac APFS 冒号 `:` 显示为 `/`，
-//! 或从 FAT/SMB 盘带过来的 GBK 名）时，程序必须**照样拷贝 + 校验**，
-//! 不能因为 `to_string_lossy()` 把路径变成 `�` 而打不开文件（EILSEQ 真凶之一）。
+//! 回归测试：文件名含非法 UTF-8 字节（从 Linux/SMB 盘带过来的 GBK 名，或 Unix 下
+//! 用 `OsStringExt` 造的原始字节名）时，程序必须**照样拷贝 + 校验**，不能因为
+//! `to_string_lossy()` 把路径变成 `�` 而打不开文件。
 //!
-//! 这个测试只能在 Unix 上跑：Windows 的 `OsStr` 底层是 UTF-16，
-//! 根本造不出「非法 UTF-8 字节」的文件名（这也正是这类问题只出现在 Mac 侧的原因）。
+//! ⚠️ 平台事实（写清楚，免得再踩）：
+//! - Windows 的 `OsStr` 底层是 UTF-16，**造不出**非法 UTF-8 字节文件名 → 整个文件 `#[cfg(unix)]`。
+//! - **macOS 的 APFS 强制文件名是合法 UTF-8**，`0xFF/0xFE` 这种字节连 `File::create`
+//!   都会被 EILSEQ 拒绝（造不出源文件）。所以「非法字节文件名」场景**只能在 Linux 上
+//!   端到端测**（ext4 允许任意非 NUL、非 / 的字节）。macOS 上只跑「合法名 + namecheck」。
+//! - 用户真实踩到的 EILSEQ 是另一码事：目标盘 NTFS/exFAT 拒绝 APFS 允许的字符（冒号 `:`，
+//!   或 Finder 显示成 `/` 的底层字符）——那类是**合法 UTF-8**，`to_string_lossy` 不污染它，
+//!   属于「目标文件系统拒名字」的真实 IO 错误，本测试不覆盖。
 //!
 //! 运行： cargo test --test non_utf8_path -- --nocapture
 
@@ -22,14 +28,18 @@ use cinebackup_lib::hash::{self, HashAlgo};
 use cinebackup_lib::scan;
 use cinebackup_lib::types::JobOptions;
 
-/// 用原始字节构造一个「非法 UTF-8」的文件名（`0xFF` / `0xFE` 不是合法 UTF-8）
+/// 用原始字节构造一个「非法 UTF-8」的文件名（`0xFF` 不是合法 UTF-8）。
+/// 注意：**只有 Linux 能把它真正写进文件系统**；macOS APFS 会拒绝。
 fn bad_name(base: &str) -> std::ffi::OsString {
     let mut b = base.as_bytes().to_vec();
-    b.extend_from_slice(&[0xFF, 0xFE]); // 塞进非法字节
+    b.extend_from_slice(&[0xFF]); // 塞进非法字节
     std::ffi::OsString::from_vec(b)
 }
 
+/// 端到端：非法字节文件名 → 预扫描 → 原始字节路径拷贝 → 内容哈希校验。
+/// 仅在 Linux 上跑（ext4 允许非法字节名）；macOS 上跳过。
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "macOS APFS 强制 UTF-8，造不出非法字节文件名")]
 fn copies_file_with_non_utf8_name() {
     let root = std::env::temp_dir().join("cinebackup_nonutf8_test");
     let _ = fs::remove_dir_all(&root);
@@ -82,10 +92,18 @@ fn copies_file_with_non_utf8_name() {
 
 #[test]
 fn non_utf8_name_detected_by_namecheck() {
-    // 顺带钉住：namecheck 能把「非 UTF-8」当作问题报出来（供日志警告）
+    // 顺带钉住：namecheck 能把「非 UTF-8」当作问题报出来（供日志警告）。
+    // 这个不碰文件系统，只测字符串级判定 → macOS / Linux 都能跑。
     let raw = bad_name("x");
     let hit = cinebackup_lib::namecheck::check_name(&raw);
     assert!(hit.is_some(), "非法 UTF-8 名字应被 namecheck 识别");
     let (_, reasons, _) = hit.unwrap();
     assert!(reasons.contains(&"not_utf8"), "应命中 not_utf8 类别");
+}
+
+#[test]
+fn clean_ascii_name_is_not_flagged() {
+    // 反向钉住：正常名字不被 namecheck 误判（避免「警告 0」时反而漏报）
+    let ok = std::ffi::OsStr::new("A032C001_241113Q2.MXF");
+    assert!(cinebackup_lib::namecheck::check_name(ok).is_none(), "纯 ASCII 名不该被标记");
 }
