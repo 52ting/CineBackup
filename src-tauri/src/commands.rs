@@ -14,6 +14,12 @@ use crate::types::{JobRequest, SourceEntry, UserReply};
 use crate::util::path_to_string;
 use crate::walk::{self, PathKind};
 
+/// 取得应用版本号（编译期常量，与 Cargo.toml 一致，前端标题栏显示用）
+#[tauri::command]
+pub fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// 探测一个路径：类型（文件 / 文件夹 / 缺失）+ 所在磁盘文件系统 + 大小
 #[tauri::command]
 pub fn probe_path(path: String) -> Result<SourceEntry, String> {

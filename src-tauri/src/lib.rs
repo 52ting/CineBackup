@@ -35,6 +35,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state::AppState::new())
         .invoke_handler(tauri::generate_handler![
+            commands::app_version,
             commands::probe_path,
             commands::fs_type,
             commands::free_space,

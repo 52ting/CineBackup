@@ -21,6 +21,7 @@ export const EV = {
 
 /** Tauri command 名称（与 Rust 端 commands.rs 一一对应） */
 export const CMD = {
+  APP_VERSION: "app_version",
   PROBE_PATH: "probe_path",
   FS_TYPE: "fs_type",
   FREE_SPACE: "free_space",
@@ -39,6 +40,11 @@ export const CMD = {
  */
 export function listDisks() {
   return invoke(CMD.LIST_DISKS);
+}
+
+/** 取得应用版本号（标题栏显示）。非 Tauri 环境（浏览器预览）会抛错，调用方自行兜底 */
+export function appVersion() {
+  return invoke(CMD.APP_VERSION);
 }
 
 /** 探测单个路径：类型 / 文件系统 / 大小 */

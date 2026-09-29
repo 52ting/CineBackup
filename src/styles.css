@@ -146,6 +146,17 @@ body {
 .tb-left { display: flex; align-items: center; gap: 9px; }
 .logo { font-size: 17px; color: var(--primary); line-height: 1; }
 .app-name { font-size: 13.5px; font-weight: 600; letter-spacing: .3px; }
+.ver {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-mute);
+  background: var(--hover);
+  border-radius: 9px;
+  padding: 1px 7px;
+  line-height: 1.5;
+  letter-spacing: .2px;
+  user-select: none;
+}
 
 .tb-mid { display: flex; justify-content: center; }
 .cap-pill {

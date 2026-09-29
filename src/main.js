@@ -7,7 +7,7 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   EV, probePath, fsType, freeSpace, listDisks, startJob, replyDecision,
-  cancelJob, saveTaskFile, loadTaskFile, on, fmtBytes,
+  cancelJob, saveTaskFile, loadTaskFile, on, fmtBytes, appVersion,
 } from "./backend.js";
 import * as ui from "./ui.js";
 import { initDragDrop } from "./dnd.js";
@@ -1228,6 +1228,20 @@ ui.setMidFolded(false);
 paintMid();
 refreshLock();
 loadDisks("init");
+
+// 标题栏版本号（编译期常量，与后端 Cargo.toml 一致）。浏览器预览等非 Tauri 环境静默降级。
+appVersion()
+  .then((v) => {
+    const el = $("appVersion");
+    if (el && v) {
+      el.textContent = `v${v}`;
+      el.title = `CineBackup v${v}`;
+    }
+  })
+  .catch(() => {
+    const el = $("appVersion");
+    if (el) el.remove();
+  });
 
 // 窗口重新获得焦点（插拔硬盘后切回来）自动刷新
 window.addEventListener("focus", () => {
