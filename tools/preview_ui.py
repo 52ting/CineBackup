@@ -100,7 +100,7 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     },
     invoke(cmd, args) {
       args = args || {};
-      if (cmd === "app_version") return Promise.resolve("0.5.4");
+      if (cmd === "app_version") return Promise.resolve("0.6.0");
       if (cmd === "list_disks") return Promise.resolve(DISKS);
       if (cmd === "fs_type") return Promise.resolve("NTFS");
       if (cmd === "free_space") return Promise.resolve(10582813462528);
@@ -463,6 +463,181 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     }, 7400);
     // 9s：追加轮进度早已到达，抓状态
     setTimeout(dump, 9000);
+  }
+
+
+  // ?rowtest=1 → 回归场景：中栏传输列表到底能显示几个源。
+  // 走**真实渲染路径**：投 cb:progress（带 12 个源）→ main.js 的 paintTransfers
+  // → ui.renderTransfers 建行，再手动切到传输视图量高度。
+  // 关注三件事：① 12 行是否都建出来了（不是只建 8 行）② 是否可滚动
+  // ③ 单行是否被压扁（flex-shrink 的老问题）。
+  if (qs.has("rowtest")) {
+    setTimeout(() => {
+      const N = 12;
+      const sources = [];
+      for (let i = 0; i < N; i++) {
+        sources.push({
+          index: i,
+          path: "D:\\\\拍摄素材\\\\源" + (i + 1) + "_A00" + (i + 1),
+          bytesTotal: 1073741824 * (i + 1),
+          bytesDone: 536870912 * (i + 1),
+          filesTotal: 5 + i,
+          filesDone: 2,
+          state: i < 3 ? "active" : "waiting",
+          currentFile: "D:\\\\拍摄素材\\\\源" + (i + 1) + "\\\\clip_" + (i + 1) + ".mxf",
+        });
+      }
+      window.__cbEmit("cb:status", { status: "copying" });
+      window.__cbEmit("cb:plan", {
+        copy: 50, resume: 0, skip: 0, overwrite: 0, conflict: 0,
+        totalBytes: 10737418240, filtered: 0,
+      });
+      window.__cbEmit("cb:progress", {
+        phase: "copy", filesTotal: 50, filesDone: 12,
+        bytesTotal: 10737418240, bytesDone: 5368709120,
+        speedBps: 104857600, etaSecs: 300,
+        currentFile: "", currentFileDone: 0, currentFileTotal: 0,
+        elapsedSecs: 60,
+        sources: sources,
+      });
+      setTimeout(() => {
+        const list = document.getElementById("transferList");
+        const body = document.getElementById("midBody");
+        if (!list || !body) return;
+        // 真实渲染路径建完行后，切到传输视图（main.js 的 setMidView 没暴露）
+        document.getElementById("diskGrid").classList.add("hidden");
+        list.classList.remove("hidden");
+        const rows = list.querySelectorAll(".transfer");
+        const firstH = rows[0] ? rows[0].getBoundingClientRect().height : 0;
+        const listH = list.getBoundingClientRect().height;
+        const bodyCS = getComputedStyle(body);
+        const scrollbarW = body.offsetWidth - body.clientWidth;
+        const subText = (document.getElementById("midSub") || {}).textContent || "";
+        const out = {
+          投递源数: N,
+          渲染行数: rows.length,
+          行数完整: rows.length === N,
+          单行高度: Math.round(firstH),
+          列表高度: Math.round(listH),
+          中栏可视高度: body.clientHeight,
+          中栏内容高度: body.scrollHeight,
+          overflowY: bodyCS.overflowY,
+          可滚动: body.scrollHeight > body.clientHeight + 2,
+          行未被压扁: firstH >= 40,
+          可视行数约: firstH > 0 ? Math.floor(body.clientHeight / firstH) : 0,
+          滚动条宽度: scrollbarW,
+          // 关键断言：滚动条必须占宽度（说明不是 macOS overlay 隐形滚动条）
+          滚动条常显: scrollbarW > 0,
+          副标题: subText,
+          副标题有滚动提示: /滚动/.test(subText),
+        };
+        if (qs.has("probe")) {
+          const pre = document.createElement("pre");
+          pre.id = "probeOut";
+          pre.textContent = JSON.stringify(out, null, 2);
+          document.body.appendChild(pre);
+        }
+        document.title = "PROBE_DONE";
+      }, 700);
+    }, 900);
+  }
+
+
+  // ?uitest=1 → 回归场景：本轮新加的交互（取消确认 / 清空任务 / 清空结果 /
+  // 跳过拷贝校验互斥 / 错误弹窗倒计时）。用真实 DOM 点击 + 事件投递验证。
+  if (qs.has("uitest")) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const el = (id) => document.getElementById(id);
+    const vis = (id) => { const e = el(id); return !!e && !e.classList.contains("hidden"); };
+    const click = (id) => { const e = el(id); if (e) e.click(); };
+    const btnIn = (modal, reply) =>
+      document.querySelector('#' + modal + ' button[data-reply="' + reply + '"]');
+
+    setTimeout(async () => {
+      const out = {};
+      out.btnDry已删除 = !el("btnDry");
+
+      // ① 取消任务 → 必须先弹确认框；点「取消」不能真的取消
+      click("btnCancel");
+      await sleep(150);
+      out.取消_弹确认框 = vis("confirmModal");
+      out.取消_确认框标题 = (el("cfTitle") || {}).textContent || "";
+      out.取消_确定按钮文案 = (el("cfOk") || {}).textContent || "";
+      out.取消_确定按钮是危险色 = !!el("cfOk") && el("cfOk").className.indexOf("danger") >= 0;
+      const cf = btnIn("confirmModal", "cancel");
+      if (cf) cf.click();
+      await sleep(150);
+      out.取消_点取消后弹窗关闭 = !vis("confirmModal");
+
+      // ② 清空任务 → 弹确认框，确认后源清空、但结果表不受影响
+      // 先垫一条校验结果，验证「清空任务不动结果表」
+      window.__cbEmit("cb:file-result", {
+        path: "D:\\\\拍摄素材\\\\keep.mxf", target: "E:\\\\CineBackup\\\\keep.mxf",
+        size: 1048576, status: "pass", srcHash: "aa", dstHash: "aa",
+        message: "SHA-256 校验一致",
+      });
+      await sleep(150);
+      const resBeforeClear = document.querySelectorAll("#resultTbody tr[data-status]").length;
+      const srcBefore = document.querySelectorAll("#srcList li.item").length;
+      click("btnClearTask");
+      await sleep(150);
+      out.清空任务_弹确认框 = vis("confirmModal");
+      const ok = btnIn("confirmModal", "ok");
+      if (ok) ok.click();
+      await sleep(250);
+      out.清空任务_源清空前 = srcBefore;
+      out.清空任务_源清空后 = document.querySelectorAll("#srcList li.item").length;
+      out.清空任务_源已清空 = out.清空任务_源清空后 === 0;
+      out.清空任务_结果表未受影响 = resBeforeClear > 0 &&
+        document.querySelectorAll("#resultTbody tr[data-status]").length === resBeforeClear;
+
+      // ③ 清空校验结果按钮 → 只清结果
+      click("btnClearResults");
+      await sleep(200);
+      out.清空结果_结果行数 = document.querySelectorAll("#resultTbody tr[data-status]").length;
+      out.清空结果_已清空 = out.清空结果_结果行数 === 0;
+      out.清空结果_计数归零 =
+        (el("cntPass") || {}).textContent === "0" && (el("cntFail") || {}).textContent === "0";
+
+      // ④ 「跳过校验」与「拷贝后自动校验」互斥
+      const v = el("optVerify"), sv = el("optSkipVerify");
+      v.checked = true;
+      sv.checked = true;
+      sv.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(60);
+      out.互斥_勾跳过校验后自动取消拷贝后校验 = v.checked === false;
+      v.checked = true;
+      v.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(60);
+      out.互斥_勾拷贝后校验后自动取消跳过校验 = sv.checked === false;
+
+      // ⑤ 错误弹窗：显示倒计时（120 秒无操作自动跳过）
+      window.__cbEmit("cb:copy-error", {
+        src: "D:\\\\拍摄素材\\\\bad\x00name.mxf",
+        dst: "E:\\\\CineBackup\\\\bad.mxf",
+        error: "[文件名非法] Illegal byte sequence (os error 92)",
+        done: 3, total: 10, timeoutSecs: 120,
+      });
+      await sleep(200);
+      out.错误弹窗_显示 = vis("errorModal");
+      const cd = el("eCountdown");
+      out.错误弹窗_倒计时可见 = !!cd && !cd.classList.contains("hidden");
+      out.错误弹窗_倒计时文本 = (cd || {}).textContent || "";
+      out.错误弹窗_倒计时含自动跳过 = /秒后自动跳过/.test((cd || {}).textContent || "");
+      out.错误弹窗_有跳过按钮 = !!btnIn("errorModal", "continue");
+      const cont = btnIn("errorModal", "continue");
+      if (cont) cont.click();
+      await sleep(120);
+      out.错误弹窗_点后关闭 = !vis("errorModal");
+
+      if (qs.has("probe")) {
+        const pre = document.createElement("pre");
+        pre.id = "probeOut";
+        pre.textContent = JSON.stringify(out, null, 2);
+        document.body.appendChild(pre);
+      }
+      document.title = "PROBE_DONE";
+    }, 1600);
   }
 
 
@@ -848,6 +1023,16 @@ def main():
         action="store_true",
         help="跑 ?filtertest=1：结果表筛选 + 底部拖高 的回归断言（不截图）",
     )
+    ap.add_argument(
+        "--rowtest",
+        action="store_true",
+        help="跑 ?rowtest=1：中栏传输列表超过 8 行不被压扁 / 可滚动 的回归断言（不截图）",
+    )
+    ap.add_argument(
+        "--uitest",
+        action="store_true",
+        help="跑 ?uitest=1：取消确认 / 清空任务 / 清空结果 / 选项互斥 / 错误倒计时 的回归断言（不截图）",
+    )
     args = ap.parse_args()
 
     if args.filtertest:
@@ -856,9 +1041,15 @@ def main():
             args.probe = True
         args.run = args.dnd = args.drop = False
 
+    if args.rowtest or args.uitest:
+        args.probe = True
+        # 这两个场景自己造状态，不需要真跑任务 / 拖放
+        args.run = args.dnd = args.drop = args.queuetest = False
+
     if args.probe or args.queuetest:
         # 回归场景固定需要：运行中 + 往左栏拖一次（新源）+ 排队探针
-        args.run = args.dnd = args.drop = True
+        if not (args.rowtest or args.uitest):
+            args.run = args.dnd = args.drop = True
     if args.filtertest:
         # 筛选/拖高场景只关心底部面板，不需要跑任务
         args.run = args.dnd = args.drop = False
@@ -907,7 +1098,11 @@ def main():
         parts.append("opts=1")
     if args.filtertest:
         parts.append("filtertest=1")
-    if args.queuetest or (args.probe and not args.filtertest):
+    if args.rowtest:
+        parts.append("rowtest=1")
+    if args.uitest:
+        parts.append("uitest=1")
+    if args.queuetest or (args.probe and not args.filtertest and not args.rowtest and not args.uitest):
         parts.append("queuetest=1")
     if args.probe:
         parts.append("probe=1")

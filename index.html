@@ -85,8 +85,8 @@
 
         <div class="task-bar">
           <button class="btn primary" id="btnStart">开始备份</button>
-          <button class="btn" id="btnDry">试运行</button>
           <button class="btn warn hidden" id="btnCancel">取消任务</button>
+          <button class="btn ghost" id="btnClearTask" title="清空源列表、目标与进度（不会清空下方校验结果）">清空任务</button>
           <div class="spacer"></div>
           <button class="btn ghost xs" id="btnLoadTask">载入任务</button>
           <button class="btn ghost xs" id="btnSaveTask">保存任务</button>
@@ -118,6 +118,14 @@
               <label class="chk">
                 <input type="checkbox" id="optVerify" checked />
                 <span>拷贝完成后自动执行全量校验（按上方所选算法）</span>
+              </label>
+              <label class="chk">
+                <input type="checkbox" id="optSkipCopy" />
+                <span>跳过拷贝（只扫描并校验目标里已存在的同名文件，不写入任何数据）</span>
+              </label>
+              <label class="chk">
+                <input type="checkbox" id="optSkipVerify" />
+                <span>跳过校验（只拷贝，不做内容哈希校验）</span>
               </label>
             </div>
           </div>
@@ -181,6 +189,7 @@
               <span class="tag bad">❌ 失败 <b id="cntFail">0</b></span>
               <span class="tag skip">⏭ 跳过 <b id="cntSkip">0</b></span>
             </div>
+            <button class="btn ghost xs" id="btnClearResults" title="只清空下方校验结果表与计数，不影响源 / 目标 / 日志">清空</button>
           </div>
         </div>
         <div class="table-wrap result-wrap">
@@ -229,15 +238,28 @@
       </div>
     </div>
 
-    <!-- ========== 错误询问模态框 ========== -->
+    <!-- ========== 错误询问模态框（120 秒无操作自动跳过当前文件） ========== -->
     <div class="modal-mask hidden" id="errorModal">
       <div class="modal">
         <h3 class="danger">文件操作失败</h3>
         <p class="modal-msg" id="eFile"></p>
         <div class="modal-detail mono" id="eDetail"></div>
+        <p class="modal-countdown" id="eCountdown"></p>
         <div class="modal-actions">
-          <button class="btn" data-reply="continue">继续下一个文件</button>
+          <button class="btn" data-reply="continue">跳过此文件，继续下一个</button>
           <button class="btn danger" data-reply="abortAll">终止全部任务</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== 通用确认模态框（取消任务 / 清空任务等破坏性操作） ========== -->
+    <div class="modal-mask hidden" id="confirmModal">
+      <div class="modal">
+        <h3 id="cfTitle">确认操作</h3>
+        <div class="modal-detail" id="cfBody"></div>
+        <div class="modal-actions">
+          <button class="btn" data-reply="cancel">取消</button>
+          <button class="btn primary" data-reply="ok" id="cfOk">确定</button>
         </div>
       </div>
     </div>

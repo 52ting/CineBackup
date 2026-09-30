@@ -201,7 +201,6 @@ export function renderStatus(status) {
   $("statusText").textContent = STATUS_LABEL[status] || status;
   const running = status !== "idle" && status !== "done";
   // 「开始备份」运行中不禁用：点它是「追加一轮」（排队到本轮结束后），由 main.js 接管
-  $("btnDry").disabled = running;
   $("btnCancel").classList.toggle("hidden", !running);
 }
 
@@ -606,8 +605,52 @@ export function showConflict(payload, onReply) {
 export function showError(payload, onReply) {
   $("eFile").textContent = `文件：${payload.src}`;
   $("eDetail").textContent = `目标：${payload.dst}\n错误：${payload.error}`;
+  // 倒计时提示：后端 120 秒无回复会自动跳过此文件（本倒计时只做 UI 提示，时长与后端一致）
+  const total = Number(payload.timeoutSecs) > 0 ? Number(payload.timeoutSecs) : 120;
+  const cd = $("eCountdown");
+  if (cd) {
+    let left = total;
+    cd.classList.remove("hidden");
+    cd.innerHTML = `<b>${left}</b> 秒后自动跳过此文件，继续下一个`;
+    clearCountdown();
+    countdownTimer = setInterval(() => {
+      left -= 1;
+      if (left <= 0) {
+        clearCountdown();
+        cd.classList.add("hidden");
+        closeModal(); // 自动关掉；后端同一时刻也会超时跳过
+        return;
+      }
+      cd.innerHTML = `<b>${left}</b> 秒后自动跳过此文件，继续下一个`;
+    }, 1000);
+  }
   openModal("errorModal", onReply);
 }
+
+/**
+ * 通用确认弹窗（取消任务 / 清空任务等破坏性操作）。
+ * @param {{title?:string, body:string, okText?:string, danger?:boolean}} opts
+ * @param {(ok:boolean)=>void} cb 用户点「确定」传 true，「取消」/点蒙层外部传 false
+ */
+export function showConfirm(opts, cb) {
+  $("cfTitle").textContent = opts.title || "确认操作";
+  $("cfBody").textContent = opts.body || "";
+  const ok = $("cfOk");
+  ok.textContent = opts.okText || "确定";
+  ok.className = opts.danger ? "btn danger" : "btn primary";
+  openModal("confirmModal", (reply) => cb(reply === "ok"));
+}
+
+/** 关闭当前打开的弹窗（不回调），供倒计时自动关闭使用 */
+function closeModal() {
+  if (activeHandler) {
+    activeHandler.mask.classList.add("hidden");
+    activeHandler.mask.removeEventListener("click", activeHandler.fn);
+    activeHandler = null;
+  }
+  clearCountdown();
+}
+
 function openModal(id, onReply) {
   const mask = $(id);
   // 清掉上一次可能残留的监听，避免重复触发
@@ -622,6 +665,7 @@ function openModal(id, onReply) {
     mask.classList.add("hidden");
     mask.removeEventListener("click", fn);
     activeHandler = null;
+    clearCountdown();
     onReply(btn.dataset.reply);
   };
   activeHandler = { mask, fn };
@@ -630,13 +674,22 @@ function openModal(id, onReply) {
 
 /** 任务结束时强制关掉所有弹窗（例如弹窗还开着用户点了「取消任务」） */
 export function hideModals() {
-  ["conflictModal", "errorModal"].forEach((id) => $(id).classList.add("hidden"));
+  ["conflictModal", "errorModal", "confirmModal"].forEach((id) => $(id).classList.add("hidden"));
   if (activeHandler) {
     activeHandler.mask.removeEventListener("click", activeHandler.fn);
     activeHandler = null;
   }
+  clearCountdown();
 }
 let activeHandler = null;
+let countdownTimer = null;
+
+function clearCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+}
 
 /* ==================== 工具 ==================== */
 export function esc(s) {

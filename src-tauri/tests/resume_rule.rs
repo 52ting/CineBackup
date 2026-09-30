@@ -355,6 +355,8 @@ fn t10_plan_classifies_all_four_cases() {
         quick_scan: false,      // 关掉快速扫描 → 大小相同的要真算哈希
         resume_prefix_check: true,
         verify_after_copy: true,
+        skip_copy: false,
+        skip_verify: false,
         hash_algo: HashAlgo::Sha256,
     };
 
@@ -577,6 +579,8 @@ fn t13_second_round_rereads_everything_already_copied() {
         quick_scan: false, // 默认值：大小相同就真算哈希
         resume_prefix_check: true,
         verify_after_copy: true,
+        skip_copy: false,
+        skip_verify: false,
         hash_algo: ALGO,
     };
     let old_src = old_dir.to_string_lossy().into_owned();

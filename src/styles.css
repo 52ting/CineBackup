@@ -296,12 +296,29 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column;
 }
+/* ⚠️ 中栏滚动条必须【常显】。
+   macOS 的 overlay 滚动条在没滚动时不占宽度、不可见（实测 offsetWidth-clientWidth = 0），
+   于是源一多（中栏高度只够放 5~8 行）用户完全看不出「下面还有」，会误以为
+   「最多只能显示八个，后面的任务跑着也不显示」。自定义 ::-webkit-scrollbar 会让
+   滚动条从 overlay 变成常驻样式（内容不超出时仍不出现），这是最直接的提示。 */
+.mid-body::-webkit-scrollbar { width: 10px; }
+.mid-body::-webkit-scrollbar-track { background: transparent; }
+.mid-body::-webkit-scrollbar-thumb {
+  background: var(--scroll);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.mid-body::-webkit-scrollbar-thumb:hover { background: var(--border-strong); background-clip: padding-box; }
+
 .disk-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(122px, 1fr));
   gap: 6px;
   padding: 8px 16px 16px;
   align-content: start;
+  /* 同 .transfer-list：作为 .mid-body 的 flex 子项，不 shrink 才能正常滚动 */
+  flex: 0 0 auto;
 }
 .empty-note {
   grid-column: 1 / -1; padding: 26px 12px; text-align: center;
@@ -362,13 +379,18 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 }
 
 /* ============================================================ 中栏：传输列表 */
-.transfer-list { display: flex; flex-direction: column; }
+/* ⚠️ `.mid-body` 是 flex column 容器，子项默认 flex-shrink:1 —— 不显式关掉的话，
+   源一多（>8 个）整个列表会被压进容器高度内、行被压扁且不触发滚动，
+   表现为「只能看到前 8 个，后面的任务在跑也看不见」。`flex: 0 0 auto` 让列表
+   保持自身内容高度，交给 `.mid-body` 的 overflow-y:auto 正常滚动。 */
+.transfer-list { display: flex; flex-direction: column; flex: 0 0 auto; }
 .transfer {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   gap: 0 11px;
   padding: 11px 14px 12px;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .transfer:first-child { border-top: 1px solid var(--border); }
 .tr-ico { width: 30px; height: 30px; color: var(--text-mute); margin-top: 2px; }
@@ -715,6 +737,11 @@ tr.row-filtered { display: none; }
   max-height: 190px; overflow: auto; font-family: var(--mono); font-size: 11.5px;
 }
 .modal-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.modal-countdown {
+  margin: -6px 0 14px; font-size: 12px; color: var(--warn); font-weight: 500;
+}
+.modal-countdown b { font-family: var(--mono); font-size: 13px; }
+.modal-countdown.hidden { display: none; }
 
 /* ============================================================ 拖拽遮罩 */
 .dnd-mask {

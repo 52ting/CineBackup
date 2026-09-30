@@ -255,8 +255,17 @@ fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, St
     }
 
     // ---------------- 4. 拷贝阶段 ----------------
-    events::emit_status(app, events::ST_COPYING);
-    let outcome = run_copy_phase(app, st, &mut plan, &req.options, &req.sources)?;
+    let outcome = if req.options.skip_copy {
+        events::emit_log(
+            app,
+            "warn",
+            "已勾选「跳过拷贝」：本次不写入任何数据，直接进入校验阶段（只核验目标里已有的同名文件）。",
+        );
+        CopyOutcome::default()
+    } else {
+        events::emit_status(app, events::ST_COPYING);
+        run_copy_phase(app, st, &mut plan, &req.options, &req.sources)?
+    };
 
     // ---------------- 5. 校验阶段 ----------------
     let mut end = JobEnd {
@@ -281,7 +290,15 @@ fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, St
 
     if outcome.aborted {
         events::emit_log(app, "warn", "任务被用户终止，跳过校验阶段。");
-    } else if req.options.verify_after_copy {        events::emit_status(app, events::ST_VERIFYING);
+    } else if req.options.skip_verify {
+        events::emit_log(
+            app,
+            "info",
+            "已勾选「跳过校验」：本次任务不做内容哈希校验（跳过的文件已登记到结果表）。",
+        );
+        emit_verify_skipped_results(app, &plan.items, &outcome);
+    } else if req.options.verify_after_copy {
+        events::emit_status(app, events::ST_VERIFYING);
         let (idx, pres, _unverified_skips) =
             build_verify_set(app, &plan.items, &req.options, &outcome.failed_idx);
         end.pass = pres;
@@ -331,6 +348,33 @@ fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, St
 }
 
 // ================================================================ 拷贝阶段
+
+/// 错误弹窗无操作多少秒后自动跳过当前文件（前端用它显示倒计时，后端到点也按此超时）
+const ERROR_DIALOG_TIMEOUT_SECS: u64 = 120;
+
+/// 把 IO 错误粗分类 —— 结果表「说明」列用 `[分类]` 前缀展示，便于按类排查
+/// （例如一批文件全是「文件名非法」，就知道该去改名而不是怀疑磁盘）。
+fn classify_io_error(e: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind as K;
+    // 先看原始 errno（比 ErrorKind 更精确，跨平台一致）
+    match e.raw_os_error() {
+        Some(92) => return "文件名非法",   // EILSEQ：目标文件系统拒这个名字
+        Some(28) => return "磁盘空间不足", // ENOSPC
+        Some(13) => return "权限不足",     // EACCES
+        Some(2) => return "路径不存在",    // ENOENT
+        Some(5) => return "目标只读或权限不足", // EIO / EROFS 常见组合场景
+        _ => {}
+    }
+    match e.kind() {
+        K::PermissionDenied => "权限不足",
+        K::NotFound => "路径不存在",
+        K::AlreadyExists => "目标已存在",
+        K::Interrupted => "已取消",
+        K::UnexpectedEof => "文件意外截断",
+        K::WriteZero => "写入失败（磁盘可能已满）",
+        _ => "IO 错误",
+    }
+}
 
 #[derive(Default)]
 struct CopyOutcome {
@@ -443,6 +487,7 @@ fn run_copy_phase(
                             suggested: action_name(suggested).to_string(),
                             reason: plan.items[i].reason.clone(),
                         },
+                        0, // 冲突不自动超时：跳过 / 覆盖都是不可逆决定，必须用户明确选择
                     );
                     match reply {
                         Some(UserReply::Skip) => PlannedAction::Skip,
@@ -726,14 +771,11 @@ fn run_copy_phase(
                     events::emit_log(app, "warn", "任务已取消，停止拷贝。");
                     break;
                 }
-                // 单个文件失败 → 让用户决定继续还是终止
-                out.errors += 1;
-                out.failed_idx.push(i);
                 out.written_bytes = out.written_bytes.saturating_add(file_written);
-                if let Some(sp) = src_prog.get_mut(si) {
-                    sp.state = "failed".into();
-                }
+                // 这个文件本次没成功拷过去 → 不参与后续校验（避免把「半截文件」报成校验失败）
+                out.failed_idx.push(i);
                 let err_text = e.to_string();
+                let err_kind = classify_io_error(&e);
                 // 把源文件名里的不可见/非法字节转义出来，帮用户一眼看出「名字本身」的问题
                 let name_hint = crate::namecheck::check_name(Path::new(&src).file_name().unwrap_or_default())
                     .map(|(disp, _, _)| format!("（文件名含非法/不可见字符，转义后：「{disp}」）"))
@@ -748,24 +790,13 @@ fn run_copy_phase(
                     app,
                     "error",
                     format!(
-                        "拷贝失败：{} —— {err_text}{name_hint}（目标：{}{}）",
+                        "拷贝失败（{err_kind}）：{} —— {err_text}{name_hint}（目标：{}{}）",
                         path_to_string(&src),
                         path_to_string(&dst),
                         dst_escaped,
                     ),
                 );
-                events::emit_file_result(
-                    app,
-                    &FileResult {
-                        path: path_to_string(&src),
-                        target: path_to_string(&dst),
-                        size,
-                        status: "error".into(),
-                        src_hash: String::new(),
-                        dst_hash: String::new(),
-                        message: format!("拷贝失败：{err_text}{name_hint}"),
-                    },
-                );
+                // 弹窗询问；120 秒无操作 → 自动跳过当前文件，继续下一个（不终止整个任务）
                 let reply = events::ask_user(
                     app,
                     st,
@@ -780,25 +811,62 @@ fn run_copy_phase(
                             || err_text.to_lowercase().contains("byte sequence")
                         {
                             format!(
-                                "{err_text}\n  目标路径字节：{}",
+                                "[{err_kind}] {err_text}\n  目标路径字节：{}",
                                 escape_path_bytes(&dst)
                             )
                         } else {
-                            err_text.clone()
+                            format!("[{err_kind}] {err_text}")
                         },
                         done: files_done,
                         total: files_total,
+                        timeout_secs: ERROR_DIALOG_TIMEOUT_SECS,
+                    },
+                    ERROR_DIALOG_TIMEOUT_SECS,
+                );
+
+                // 超时（后端自动返回 Skip）与用户点「跳过此文件」都算「跳过」：
+                // 结果表归到「跳过」栏，说明列带上错误归类，便于批量排查。
+                let timed_out = matches!(reply, Some(UserReply::Skip));
+                let skip_file = matches!(reply, Some(UserReply::Continue) | Some(UserReply::Skip));
+                let label = if timed_out {
+                    format!("弹窗 {} 秒无操作，自动跳过", ERROR_DIALOG_TIMEOUT_SECS)
+                } else if skip_file {
+                    "已跳过".to_string()
+                } else {
+                    "拷贝失败".to_string()
+                };
+                if let Some(sp) = src_prog.get_mut(si) {
+                    sp.state = if skip_file { "skipped" } else { "failed" }.into();
+                }
+                if skip_file {
+                    out.skipped += 1;
+                    events::emit_log(
+                        app,
+                        "warn",
+                        format!(
+                            "{label}：{}（继续处理下一个文件）",
+                            path_to_string(&src)
+                        ),
+                    );
+                } else {
+                    out.errors += 1;
+                }
+                events::emit_file_result(
+                    app,
+                    &FileResult {
+                        path: path_to_string(&src),
+                        target: path_to_string(&dst),
+                        size,
+                        status: if skip_file { "skip".into() } else { "error".into() },
+                        src_hash: String::new(),
+                        dst_hash: String::new(),
+                        message: format!("[{err_kind}] {label}：{err_text}{name_hint}"),
                     },
                 );
-                match reply {
-                    Some(UserReply::Continue) => {
-                        events::emit_log(app, "warn", "已选择继续处理下一个文件。");
-                    }
-                    _ => {
-                        out.aborted = true;
-                        events::emit_log(app, "warn", "已选择终止全部任务。");
-                        break;
-                    }
+                if !skip_file {
+                    out.aborted = true;
+                    events::emit_log(app, "warn", "已选择终止全部任务。");
+                    break;
                 }
             }
         }
@@ -958,7 +1026,22 @@ fn build_verify_set(
                 }
             }
             PlannedAction::Copy | PlannedAction::Resume | PlannedAction::Overwrite => {
-                if opts.verify_after_copy {
+                if opts.skip_copy {
+                    // 跳过拷贝模式：这些文件本次并没有写入（目标不存在或需重写），无从校验
+                    skipped += 1;
+                    events::emit_file_result(
+                        app,
+                        &FileResult {
+                            path: it.src.clone(),
+                            target: it.dst.clone(),
+                            size: it.size,
+                            status: "skip".into(),
+                            src_hash: String::new(),
+                            dst_hash: String::new(),
+                            message: "[跳过拷贝] 本次未写入该文件（目标无对应文件或需重写），未校验".into(),
+                        },
+                    );
+                } else if opts.verify_after_copy {
                     idx.push(i);
                 }
             }
@@ -969,6 +1052,36 @@ fn build_verify_set(
         }
     }
     (idx, pre_pass, skipped)
+}
+
+/// 勾选「跳过校验」时，把每个文件都登记成「跳过」结果 —— 用户要求跳过的任务
+/// 也要在结果表的「跳过」栏里看得到，而不是一整轮跑完结果表空着。
+fn emit_verify_skipped_results(app: &AppHandle, items: &[PlanItem], outcome: &CopyOutcome) {
+    let failed: std::collections::HashSet<usize> = outcome.failed_idx.iter().copied().collect();
+    for (i, it) in items.iter().enumerate() {
+        // 拷贝阶段已经单独报过的（跳过 / 失败）不再重复登记
+        if failed.contains(&i) {
+            continue;
+        }
+        let act = it.final_action.unwrap_or(it.action);
+        let msg = if act == PlannedAction::Skip && it.hash_checked {
+            "[跳过校验] 预扫描阶段已确认与目标内容一致".to_string()
+        } else {
+            "[跳过校验] 已按选项跳过内容校验".to_string()
+        };
+        events::emit_file_result(
+            app,
+            &FileResult {
+                path: it.src.clone(),
+                target: it.dst.clone(),
+                size: it.size,
+                status: "skip".into(),
+                src_hash: String::new(),
+                dst_hash: String::new(),
+                message: msg,
+            },
+        );
+    }
 }
 
 /// Dry Run 结果预览：把「将会发生什么」逐条列出来
@@ -1119,4 +1232,38 @@ pub fn ensure_target_writable(target: &Path) -> Result<(), String> {
 /// 供命令层使用：当前是否已有任务在跑
 pub fn busy(st: &AppState) -> bool {
     st.is_busy()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_io_error;
+
+    #[test]
+    fn classify_maps_eilseq_to_filename_kind() {
+        // 92 = EILSEQ：目标文件系统拒这个名字（APFS 未分配码位 / NTFS 冒号等）
+        let e = std::io::Error::from_raw_os_error(92);
+        assert_eq!(classify_io_error(&e), "文件名非法");
+    }
+
+    #[test]
+    fn classify_maps_common_errnos() {
+        assert_eq!(classify_io_error(&std::io::Error::from_raw_os_error(28)), "磁盘空间不足");
+        assert_eq!(classify_io_error(&std::io::Error::from_raw_os_error(13)), "权限不足");
+        assert_eq!(classify_io_error(&std::io::Error::from_raw_os_error(2)), "路径不存在");
+    }
+
+    #[test]
+    fn classify_falls_back_to_error_kind() {
+        let e = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        assert_eq!(classify_io_error(&e), "权限不足");
+        let e2 = std::io::Error::new(std::io::ErrorKind::WriteZero, "zero");
+        assert_eq!(classify_io_error(&e2), "写入失败（磁盘可能已满）");
+        let e3 = std::io::Error::new(std::io::ErrorKind::Other, "misc");
+        assert_eq!(classify_io_error(&e3), "IO 错误");
+    }
+
+    #[test]
+    fn error_dialog_timeout_is_two_minutes() {
+        assert_eq!(super::ERROR_DIALOG_TIMEOUT_SECS, 120);
+    }
 }

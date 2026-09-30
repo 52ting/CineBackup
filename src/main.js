@@ -548,8 +548,13 @@ function paintTransfers(p) {
 function paintMid() {
   const n = state.runRows.length;
   const isTr = state.midView === "transfers";
+  const base = isTr ? `${n} 个源` : n ? `${n} 个源传输中` : "";
+  // 中栏高度只够放 5~8 行，源更多时要给用户「下面还有」的明确提示
+  // （macOS 的 overlay 滚动条不滚动时不可见，光靠滚动条不够）
+  const HINT_AT = 6;
+  const sub = n > HINT_AT ? `${base}（滚动查看全部 ${n} 个）` : base;
   ui.renderMidMode(state.midView, {
-    sub: isTr ? `${n} 个源` : n ? `${n} 个源传输中` : "",
+    sub,
     showTotal: isTr || n > 0 || state.running,
   });
   syncFoldButton();
@@ -727,6 +732,10 @@ function collectOptions() {
     quickScan: $("optQuick").checked,
     resumePrefixCheck: $("optPrefix").checked,
     verifyAfterCopy: $("optVerify").checked,
+    // 跳过拷贝：只扫描 + 校验目标里已存在的文件，不写入任何数据
+    skipCopy: $("optSkipCopy").checked,
+    // 跳过校验：只拷贝，不做内容哈希校验
+    skipVerify: $("optSkipVerify").checked,
     // "sha256"（默认）| "xxh64" —— 预扫描查重 / 续传前缀 / 最终校验都用它
     hashAlgo: $("optAlgo").value,
   };
@@ -837,12 +846,71 @@ async function run(dryRun, mode = "full") {
 }
 
 async function cancel() {
+  // 取消是不可逆的（本轮已写入的部分要靠下次续传），先让用户确认
+  const ok = await confirmDialog({
+    title: "取消当前任务？",
+    body:
+      "将安全停止本轮备份：已完成的文件保留，未完成的半截文件下次会自动续传。\n" +
+      "正在等待的冲突 / 错误弹窗也会一并关闭。",
+    okText: "取消任务",
+    danger: true,
+  });
+  if (!ok) return;
   ui.pushLog("warn", "已请求取消任务，正在安全停止…");
   try {
     await cancelJob();
   } catch (e) {
     ui.pushLog("error", `取消失败：${e}`);
   }
+}
+
+/** 把 ui.showConfirm 包成 Promise，方便 async/await 里用 */
+function confirmDialog(opts) {
+  return new Promise((resolve) => ui.showConfirm(opts, resolve));
+}
+
+/**
+ * 一键清空任务：源列表 + 目标 + 进度与中栏。
+ * **不动校验结果**（那是独立的记录，要清有结果面板自己的「清空」按钮）。
+ */
+async function clearTask() {
+  if (state.running) {
+    ui.pushLog("warn", "任务运行中不能清空任务；请先「取消任务」或等它跑完。");
+    return;
+  }
+  if (!state.sources.length && !state.target && !state.runRows.length) {
+    ui.pushLog("info", "当前没有任务内容可清空。");
+    return;
+  }
+  const ok = await confirmDialog({
+    title: "清空当前任务？",
+    body:
+      `将清空：源列表（${state.sources.length} 个）、目标文件夹、进度与中栏传输列表。\n` +
+      "不会清空下方「校验结果」与运行日志。",
+    okText: "清空任务",
+    danger: true,
+  });
+  if (!ok) return;
+
+  state.sources = [];
+  state.target = null;
+  state.targetFree = null;
+  state.planBytes = 0;
+  state.runRows = [];
+  state.roundKeys = new Set();
+  state.pendingRun = false;
+  state.midView = "disks";
+  state.midFolded = false;
+
+  ui.renderSources(state.sources);
+  ui.renderTarget(null, null);
+  ui.resetProgress();
+  ui.clearTransfers();
+  ui.setMidFolded(false);
+  paintMid();
+  paintDisks();
+  refreshLock();
+  ui.pushLog("ok", "任务已清空（源 / 目标 / 进度）；校验结果与日志保留。");
 }
 
 /* ==================== 任务保存 / 加载 ==================== */
@@ -927,6 +995,8 @@ async function loadTask() {
   if (typeof o.quickScan === "boolean") $("optQuick").checked = o.quickScan;
   if (typeof o.resumePrefixCheck === "boolean") $("optPrefix").checked = o.resumePrefixCheck;
   if (typeof o.verifyAfterCopy === "boolean") $("optVerify").checked = o.verifyAfterCopy;
+  if (typeof o.skipCopy === "boolean") $("optSkipCopy").checked = o.skipCopy;
+  if (typeof o.skipVerify === "boolean") $("optSkipVerify").checked = o.skipVerify;
   // 老任务文件没有这个字段 → 保持当前选择（默认就是 SHA-256）
   if (o.hashAlgo === "xxh64" || o.hashAlgo === "sha256") $("optAlgo").value = o.hashAlgo;
   refreshAlgoUi();
@@ -1134,8 +1204,12 @@ $("btnStart").addEventListener("click", () => {
   }
   run(false);
 });
-$("btnDry").addEventListener("click", () => run(true));
+$("btnClearTask").addEventListener("click", clearTask);
 $("btnCancel").addEventListener("click", cancel);
+$("btnClearResults").addEventListener("click", () => {
+  ui.resetResults();
+  ui.pushLog("info", "已清空校验结果（源 / 目标 / 日志不受影响）。");
+});
 $("btnSaveTask").addEventListener("click", saveTask);
 $("btnLoadTask").addEventListener("click", loadTask);
 $("btnClearLog").addEventListener("click", () => ui.clearLog());
@@ -1157,6 +1231,27 @@ $("btnOptions").addEventListener("click", (ev) => {
 });
 document.addEventListener("click", (ev) => {
   if (!ev.target.closest("#optWrap")) $("optMenu").classList.add("hidden");
+});
+// 「拷贝后自动校验」与「跳过校验」互斥：勾一个自动取消另一个，避免自相矛盾
+$("optVerify").addEventListener("change", () => {
+  if ($("optVerify").checked) $("optSkipVerify").checked = false;
+});
+$("optSkipVerify").addEventListener("change", () => {
+  if ($("optSkipVerify").checked) $("optVerify").checked = false;
+});
+// 「跳过拷贝」下拉出来时提示：不会写盘，只校验目标里已有的文件
+$("optSkipCopy").addEventListener("change", () => {
+  ui.pushLog(
+    "info",
+    $("optSkipCopy").checked
+      ? "已勾选「跳过拷贝」：本次任务只扫描并校验目标里已存在的文件，不会写入任何数据。"
+      : "已取消「跳过拷贝」：本次任务会正常写入数据。"
+  );
+});
+$("optSkipVerify").addEventListener("change", () => {
+  if ($("optSkipVerify").checked) {
+    ui.pushLog("info", "已勾选「跳过校验」：本次任务只拷贝，不做内容哈希校验。");
+  }
 });
 // 换算法 → 结果表头 / 说明文案立刻跟上（真正生效是下一次任务开始时）
 $("optAlgo").addEventListener("change", () => {
@@ -1201,7 +1296,7 @@ initDragDrop({
 });
 
 // 运行中锁定编辑类操作（加源不锁：运行中加源是支持的，加完会自动排队跑下一轮）
-const lockables = ["btnPickTarget", "btnSaveTask", "btnLoadTask"];
+const lockables = ["btnPickTarget", "btnSaveTask", "btnLoadTask", "btnClearTask"];
 function refreshLock() {
   const lock = state.running;
   ui.renderStatus($("statusPill").dataset.s || "idle");

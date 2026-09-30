@@ -120,6 +120,12 @@ pub struct JobOptions {
     pub resume_prefix_check: bool,
     /// 拷贝完成后自动全量校验
     pub verify_after_copy: bool,
+    /// 跳过拷贝阶段：只做扫描 + 校验目标里已存在的文件，不写入任何数据
+    #[serde(default)]
+    pub skip_copy: bool,
+    /// 跳过校验阶段：只拷贝，不做内容哈希校验
+    #[serde(default)]
+    pub skip_verify: bool,
     /// 内容哈希算法：默认 SHA-256，可切 xxHash64 提速。
     /// 同一次任务里预扫描查重 / 续传前缀 / 最终校验都用这一种。
     #[serde(default)]
@@ -133,6 +139,8 @@ impl Default for JobOptions {
             quick_scan: false,
             resume_prefix_check: true,
             verify_after_copy: true,
+            skip_copy: false,
+            skip_verify: false,
             hash_algo: HashAlgo::default(),
         }
     }

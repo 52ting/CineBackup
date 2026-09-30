@@ -136,6 +136,8 @@ pub struct CopyErrorAsk {
     pub error: String,
     pub done: u64,
     pub total: u64,
+    /// 无操作多少秒后自动跳过当前文件（前端用它显示倒计时；后端到点也按此超时）
+    pub timeout_secs: u64,
 }
 
 // ---------------------------------------------------------------- 发送辅助
@@ -183,6 +185,8 @@ pub fn log_bytes(app: &AppHandle, prefix: &str, n: u64) {
 /// 向前端弹出模态框并**阻塞等待**用户点击，直到：
 /// - 用户点了某个按钮 → 返回对应 `UserReply`
 /// - 用户点击「取消任务」 → 返回 `None`
+/// - 超过 `timeout_secs` 秒没有操作 → 返回 `Some(UserReply::Skip)`（跳过当前文件继续下一个）；
+///   `timeout_secs == 0` 表示不超时（一直等）
 ///
 /// 等待期间以 200ms 为粒度轮询取消标志，保证「取消」按钮在弹窗打开时依然有效。
 pub fn ask_user<S: Serialize + Clone>(
@@ -190,6 +194,7 @@ pub fn ask_user<S: Serialize + Clone>(
     st: &AppState,
     event: &str,
     payload: S,
+    timeout_secs: u64,
 ) -> Option<UserReply> {
     let (tx, rx) = channel::<UserReply>();
     st.set_reply_sender(Some(tx));
@@ -198,6 +203,11 @@ pub fn ask_user<S: Serialize + Clone>(
         emit_log(app, "error", format!("弹窗事件发送失败：{e}"));
         return None;
     }
+    let deadline = if timeout_secs > 0 {
+        Some(std::time::Instant::now() + Duration::from_secs(timeout_secs))
+    } else {
+        None
+    };
     let mut out: Option<UserReply> = None;
     loop {
         match rx.recv_timeout(Duration::from_millis(200)) {
@@ -208,6 +218,13 @@ pub fn ask_user<S: Serialize + Clone>(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if st.cancelled() {
                     break;
+                }
+                // 120 秒无操作 → 自动跳过当前文件（不是终止整个任务）
+                if let Some(d) = deadline {
+                    if std::time::Instant::now() >= d {
+                        out = Some(UserReply::Skip);
+                        break;
+                    }
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
