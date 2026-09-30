@@ -100,7 +100,7 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     },
     invoke(cmd, args) {
       args = args || {};
-      if (cmd === "app_version") return Promise.resolve("1.0.0");
+      if (cmd === "app_version") return Promise.resolve("1.0.1");
       if (cmd === "list_disks") return Promise.resolve(DISKS);
       if (cmd === "fs_type") return Promise.resolve("NTFS");
       if (cmd === "free_space") return Promise.resolve(10582813462528);
@@ -556,6 +556,13 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     setTimeout(async () => {
       const out = {};
       out.btnDry已删除 = !el("btnDry");
+
+      // ⓪ 主题色：#FB565A（rgb(251, 86, 90)）
+      const rootCS = getComputedStyle(document.documentElement);
+      out.主题色_变量 = rootCS.getPropertyValue("--primary").trim();
+      out.主题色_开始按钮底色 = getComputedStyle(el("btnStart")).backgroundColor;
+      out.主题色_是FB565A =
+        out.主题色_开始按钮底色.replace(/\\s/g, "") === "rgb(251,86,90)";
 
       // ① 取消任务 → 必须先弹确认框；点「取消」不能真的取消
       click("btnCancel");

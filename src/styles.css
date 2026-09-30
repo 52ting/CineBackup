@@ -17,9 +17,9 @@
   --text: #1b1f27;
   --text-dim: #666f7d;
   --text-mute: #98a0ac;
-  --primary: #2f6feb;
-  --primary-dark: #245ac4;
-  --primary-soft: #e8f0fe;
+  --primary: #fb565a;
+  --primary-dark: #e13b40;
+  --primary-soft: #fdecec;
   --danger: #d93b3b;
   --ok: #1f9d55;
   --warn: #d98c00;
@@ -48,9 +48,9 @@
     --text: #e8e8ec;
     --text-dim: #9b9ba4;
     --text-mute: #6e6e78;
-    --primary: #4b8bf5;
-    --primary-dark: #6ba0f8;
-    --primary-soft: #22304a;
+    --primary: #fb565a;
+    --primary-dark: #ff7a7d;
+    --primary-soft: #3a1e20;
     --danger: #f07070;
     --ok: #4ec27f;
     --warn: #e0a33c;
@@ -78,9 +78,9 @@
   --text: #e8e8ec;
   --text-dim: #9b9ba4;
   --text-mute: #6e6e78;
-  --primary: #4b8bf5;
-  --primary-dark: #6ba0f8;
-  --primary-soft: #22304a;
+  --primary: #fb565a;
+  --primary-dark: #ff7a7d;
+  --primary-soft: #3a1e20;
   --danger: #f07070;
   --ok: #4ec27f;
   --warn: #e0a33c;
@@ -163,7 +163,7 @@ body {
   padding: 4px 15px; border-radius: 999px;
   background: var(--primary); color: #fff;
   font-size: 12px; font-weight: 600;
-  box-shadow: 0 2px 8px rgba(47, 111, 235, .3);
+  box-shadow: 0 2px 8px rgba(251, 86, 90, .3);
   white-space: nowrap;
 }
 .cap-pill.warn { background: var(--warn); box-shadow: 0 2px 8px rgba(217, 140, 0, .3); }
@@ -252,7 +252,7 @@ body {
 /* 拖拽悬停：命中的一侧高亮 */
 .area-src.drop-hot .dropzone {
   border-color: var(--primary); background: var(--primary-soft);
-  box-shadow: 0 0 0 3px rgba(47, 111, 235, .14);
+  box-shadow: 0 0 0 3px rgba(251, 86, 90, .14);
 }
 .area-dst.drop-hot .dropzone {
   border-color: var(--ok); background: rgba(31, 157, 85, .07);
@@ -417,7 +417,7 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 }
 .tr-bar > i {
   display: block; height: 100%; width: 0;
-  background: linear-gradient(90deg, #78aaf7, var(--primary));
+  background: linear-gradient(90deg, #ffa3a5, var(--primary));
   transition: width .25s ease;
 }
 .tr-bar.done > i { background: linear-gradient(90deg, #55cc8c, var(--ok)); }
@@ -458,7 +458,7 @@ body.dnd-active .area-src, body.dnd-active .area-dst {
 }
 .progress-inner {
   height: 100%; width: 0;
-  background: linear-gradient(90deg, #78aaf7, var(--primary));
+  background: linear-gradient(90deg, #ffa3a5, var(--primary));
   transition: width .2s ease;
 }
 .progress-inner.done { background: linear-gradient(90deg, #55cc8c, var(--ok)); }
@@ -746,7 +746,7 @@ tr.row-filtered { display: none; }
 /* ============================================================ 拖拽遮罩 */
 .dnd-mask {
   position: fixed; inset: 0; z-index: 92;
-  background: rgba(47, 111, 235, .05);
+  background: rgba(251, 86, 90, .05);
   display: flex; align-items: flex-end; justify-content: center;
   /* 关键：遮罩不参与命中测试，否则 elementFromPoint 探不到下面的投放区 */
   pointer-events: none;
