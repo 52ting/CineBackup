@@ -19,6 +19,8 @@ pub const EV_CONFLICT: &str = "cb:conflict";
 pub const EV_COPY_ERROR: &str = "cb:copy-error";
 pub const EV_FILE_RESULT: &str = "cb:file-result";
 pub const EV_JOB_END: &str = "cb:job-end";
+pub const EV_COMPARE_PROGRESS: &str = "cb:compare-progress";
+pub const EV_COMPARE_DONE: &str = "cb:compare-done";
 
 // -------- 状态值 --------
 pub const ST_IDLE: &str = "idle";
@@ -173,6 +175,14 @@ pub fn emit_file_result(app: &AppHandle, r: &crate::types::FileResult) {
 
 pub fn emit_job_end(app: &AppHandle, r: &crate::types::JobEnd) {
     let _ = app.emit(EV_JOB_END, r.clone());
+}
+
+pub fn emit_compare_progress(app: &AppHandle, p: &crate::compare::CompareProgress) {
+    let _ = app.emit(EV_COMPARE_PROGRESS, p.clone());
+}
+
+pub fn emit_compare_done(app: &AppHandle, r: &crate::compare::CompareResult) {
+    let _ = app.emit(EV_COMPARE_DONE, r.clone());
 }
 
 /// 便捷日志：带字节数的信息

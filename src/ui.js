@@ -713,4 +713,129 @@ function isFragileFs(fs) {
   const f = String(fs || "").toLowerCase();
   return f.includes("ntfs");
 }
+/* ==================== 对比校验（独立面板） ==================== */
+const CMP_MAP = {
+  same:       { icon: "✅", label: "一致",   cls: "st-pass" },
+  different:  { icon: "❌", label: "不一致", cls: "st-fail" },
+  left_only:  { icon: "◀",  label: "仅左侧", cls: "st-skip" },
+  right_only: { icon: "▶",  label: "仅右侧", cls: "st-skip" },
+  error:      { icon: "⚠",  label: "读取失败", cls: "st-fail" },
+};
+let cmpFilter = "all";
+
+/** 打开 / 关闭对比面板（独立控制，不走 openModal —— 它不受备份任务结束影响） */
+export function showComparePanel(show) {
+  $("compareModal").classList.toggle("hidden", !show);
+}
+export function isComparePanelOpen() {
+  return !$("compareModal").classList.contains("hidden");
+}
+export function setComparePath(side, path) {
+  $(side === "left" ? "cmpLeft" : "cmpRight").value = path || "";
+}
+export function getComparePaths() {
+  return { left: $("cmpLeft").value.trim(), right: $("cmpRight").value.trim() };
+}
+export function getCompareQuick() {
+  return !!$("cmpQuick").checked;
+}
+/** 清空上一次的结果（开始新一轮前调用） */
+export function resetCompare() {
+  $("cmpSummary").classList.add("hidden");
+  $("cmpResultWrap").classList.add("hidden");
+  $("cmpProgress").classList.add("hidden");
+  $("cmpTbody").innerHTML = "";
+  cmpFilter = "all";
+  setCmpFilter("all");
+}
+
+/** 对比进行中：切进度条 / 按钮态 */
+export function renderCompareBusy(running) {
+  $("cmpProgress").classList.toggle("hidden", !running);
+  $("cmpCancelBtn").classList.toggle("hidden", !running);
+  $("cmpStartBtn").disabled = running;
+  if (running) {
+    $("cmpBar").style.width = "0%";
+    $("cmpProgressText").textContent = "准备中…";
+  }
+}
+
+/** 进度事件 */
+export function renderCompareProgress(p) {
+  const total = p.filesTotal || 0;
+  const done = p.filesDone || 0;
+  const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+  $("cmpBar").style.width = `${pct.toFixed(1)}%`;
+  const phase = p.phase === "enum" ? "扫描目录" : p.phase === "hash" ? "比对内容" : "收尾";
+  const name = p.current ? baseName(p.current) : "";
+  $("cmpProgressText").textContent =
+    `${phase} · ${done}${total ? "/" + total : ""}` +
+    (name ? ` · ${name}` : "") +
+    (p.bytesHashed ? ` · 已读 ${fmtBytes(p.bytesHashed)}` : "");
+}
+
+/** 最终结果 */
+export function renderCompareResult(res) {
+  renderCompareBusy(false);
+
+  const sum = $("cmpSummary");
+  sum.classList.remove("hidden");
+  sum.className = "cmp-summary " + (res.ok ? "ok" : "bad");
+  sum.innerHTML =
+    `<div class="cmp-verdict">${res.ok ? "✅ 两边一致" : "❌ 存在差异"}</div>` +
+    `<div class="cmp-counts">` +
+    `<span class="tag ok">一致 <b>${res.same}</b></span>` +
+    `<span class="tag bad">不一致 <b>${res.different}</b></span>` +
+    `<span class="tag skip">仅左侧 <b>${res.leftOnly}</b></span>` +
+    `<span class="tag skip">仅右侧 <b>${res.rightOnly}</b></span>` +
+    (res.errors ? `<span class="tag bad">读取失败 <b>${res.errors}</b></span>` : "") +
+    `</div>` +
+    `<div class="cmp-meta mono">${esc(res.message)} · 用时 ${Number(res.elapsedSecs || 0).toFixed(1)}s` +
+    (res.hashedBytes ? ` · 已读 ${fmtBytes(res.hashedBytes)}` : "") +
+    `</div>`;
+
+  const tb = $("cmpTbody");
+  tb.innerHTML = "";
+  // 差异排前面（用户最关心的），一致沉底
+  const items = (res.items || []).slice().sort((a, b) => {
+    const rank = (x) => (x.status === "same" ? 1 : 0);
+    return rank(a) - rank(b) || String(a.rel).localeCompare(String(b.rel));
+  });
+  for (const it of items) {
+    const m = CMP_MAP[it.status] || CMP_MAP.error;
+    const bucket = it.status === "same" ? "same" : "diff";
+    const tr = document.createElement("tr");
+    tr.dataset.cmp = bucket;
+    tr.className = bucket === "diff" ? "row-fail" : "row-pass";
+    const hashTip =
+      it.leftHash && it.rightHash ? `\n左 ${it.leftHash}\n右 ${it.rightHash}` : "";
+    tr.innerHTML =
+      `<td><span class="${m.cls}">${m.icon} ${m.label}</span></td>` +
+      `<td class="path-cell mono" title="${esc(it.rel)}">${esc(it.rel)}</td>` +
+      `<td class="mono">${it.leftSize ? fmtBytes(it.leftSize) : "—"}</td>` +
+      `<td class="mono">${it.rightSize ? fmtBytes(it.rightSize) : "—"}</td>` +
+      `<td title="${esc((it.message || "") + hashTip)}">${esc(it.message || "")}</td>`;
+    tb.appendChild(tr);
+  }
+  if (!items.length) {
+    tb.innerHTML = `<tr class="empty-row"><td colspan="5">两边都是空的，没有文件可比对。</td></tr>`;
+  }
+  $("cmpResultWrap").classList.remove("hidden");
+  setCmpFilter(cmpFilter);
+}
+
+export function setCmpFilter(f) {
+  if (f) {
+    cmpFilter = f;
+    document.querySelectorAll("#cmpFilter .flt").forEach((b) => {
+      b.classList.toggle("active", b.dataset.cf === f);
+    });
+  }
+  const tb = $("cmpTbody");
+  tb.querySelectorAll("tr[data-cmp]").forEach((tr) => {
+    const show = cmpFilter === "all" || tr.dataset.cmp === cmpFilter;
+    tr.classList.toggle("row-filtered", !show);
+  });
+}
+
 export const _internal = { $ };

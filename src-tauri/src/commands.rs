@@ -103,6 +103,38 @@ pub fn is_busy(state: State<'_, AppState>) -> bool {
     engine::busy(state.inner())
 }
 
+/// 启动**对比校验**（只读：同时看左右两边，回答是否一致）。
+///
+/// 立即返回，实际工作在后台线程；进度与结果通过
+/// `cb:compare-progress` / `cb:compare-done` 事件推送。
+/// 与备份任务**互相独立**（对比不抢备份的 busy 槽位），但同一时间只允许一个对比。
+#[tauri::command]
+pub fn start_compare(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    left: String,
+    right: String,
+    options: crate::compare::CompareOptions,
+) -> Result<(), String> {
+    if left.trim().is_empty() || right.trim().is_empty() {
+        return Err("请先选择要对比的两边路径（文件或文件夹）。".into());
+    }
+    if state.is_comparing() {
+        return Err("已有对比正在进行，请等待完成或先取消。".into());
+    }
+    state.clear_compare_cancel();
+    state.try_acquire_compare();
+    engine::spawn_compare(app, left, right, options);
+    Ok(())
+}
+
+/// 取消正在进行的对比校验
+#[tauri::command]
+pub fn cancel_compare(state: State<'_, AppState>) -> Result<(), String> {
+    state.request_compare_cancel();
+    Ok(())
+}
+
 /// 保存任务为 JSON（只存源路径数组 + 目标路径 + 选项）
 #[tauri::command]
 pub fn save_task_file(path: String, task: TaskFile) -> Result<(), String> {

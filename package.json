@@ -1,7 +1,7 @@
 {
   "name": "cinebackup",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.1.0",
   "type": "module",
   "description": "魔王拷贝 (MowangCopy) - 影视素材 / DCP 跨平台备份工具 (Tauri 2 + Rust)",
   "license": "MIT",

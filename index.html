@@ -88,6 +88,7 @@
           <button class="btn warn hidden" id="btnCancel">取消任务</button>
           <button class="btn ghost" id="btnClearTask" title="清空源列表、目标与进度（不会清空下方校验结果）">清空任务</button>
           <div class="spacer"></div>
+          <button class="btn ghost xs" id="btnCompare" title="对比校验：同时查看两边，逐项回答是否一致（只读）">对比校验</button>
           <button class="btn ghost xs" id="btnLoadTask">载入任务</button>
           <button class="btn ghost xs" id="btnSaveTask">保存任务</button>
           <div class="dropdown dropup" id="optWrap">
@@ -260,6 +261,70 @@
         <div class="modal-actions">
           <button class="btn" data-reply="cancel">取消</button>
           <button class="btn primary" data-reply="ok" id="cfOk">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== 对比校验面板（独立于备份任务，只读） ========== -->
+    <div class="modal-mask hidden" id="compareModal">
+      <div class="modal modal-wide">
+        <h3>对比校验</h3>
+        <p class="modal-msg">
+          同时查看左右两边，逐项回答「是否一致」。<b>只读</b>，不会写入或修改任何文件。
+          两边类型要一致（同为文件，或同为文件夹）。
+        </p>
+
+        <div class="cmp-row">
+          <span class="cmp-side">左侧</span>
+          <input class="cmp-path mono" id="cmpLeft" readonly placeholder="未选择…" />
+          <button class="btn xs" data-cmp-pick="dir" data-side="left">文件夹…</button>
+          <button class="btn xs" data-cmp-pick="file" data-side="left">文件…</button>
+        </div>
+        <div class="cmp-row">
+          <span class="cmp-side">右侧</span>
+          <input class="cmp-path mono" id="cmpRight" readonly placeholder="未选择…" />
+          <button class="btn xs" data-cmp-pick="dir" data-side="right">文件夹…</button>
+          <button class="btn xs" data-cmp-pick="file" data-side="right">文件…</button>
+        </div>
+
+        <label class="chk">
+          <input type="checkbox" id="cmpQuick" />
+          <span>快速模式：只比文件名与大小，<b>不读内容</b>（大目录几秒出结果；但大小相同的不同内容会被判成一致）</span>
+        </label>
+
+        <div class="cmp-progress hidden" id="cmpProgress">
+          <div class="progress-outer"><div class="progress-inner" id="cmpBar" style="width: 0%"></div></div>
+          <div class="cmp-progress-text mono" id="cmpProgressText">准备中…</div>
+        </div>
+
+        <div class="cmp-summary hidden" id="cmpSummary"></div>
+
+        <div class="cmp-result-wrap hidden" id="cmpResultWrap">
+          <div class="cmp-filter" id="cmpFilter">
+            <button class="flt active" data-cf="all">全部</button>
+            <button class="flt" data-cf="diff">差异</button>
+            <button class="flt" data-cf="same">一致</button>
+          </div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th style="width: 78px">状态</th>
+                  <th>相对路径</th>
+                  <th style="width: 82px">左侧大小</th>
+                  <th style="width: 82px">右侧大小</th>
+                  <th style="width: 150px">说明</th>
+                </tr>
+              </thead>
+              <tbody id="cmpTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn" id="cmpCloseBtn">关闭</button>
+          <button class="btn warn hidden" id="cmpCancelBtn">取消对比</button>
+          <button class="btn primary" id="cmpStartBtn">开始对比</button>
         </div>
       </div>
     </div>

@@ -9,10 +9,12 @@
 //! - `scan`     冲突预扫描，产出拷贝计划
 //! - `engine`   任务调度：串行串起 扫描 → 拷贝 → 校验，后台线程执行
 //! - `verify`   拷贝完成后的全量哈希校验阶段（默认 SHA-256）
+//! - `compare`  独立的对比校验（两边文件/文件夹是否一致，只读）
 //! - `task`     JSON 任务保存 / 加载
 //! - `commands` Tauri 命令入口
 
 pub mod commands;
+pub mod compare;
 pub mod copy;
 pub mod disks;
 pub mod engine;
@@ -44,6 +46,8 @@ pub fn run() {
             commands::reply_decision,
             commands::cancel_job,
             commands::is_busy,
+            commands::start_compare,
+            commands::cancel_compare,
             commands::save_task_file,
             commands::load_task_file,
         ])

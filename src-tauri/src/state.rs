@@ -14,6 +14,11 @@ pub struct AppState {
     pub cancel: AtomicBool,
     /// 当前挂起的模态框回信通道；前端点按钮后由此送回
     pub reply: Mutex<Option<Sender<UserReply>>>,
+    /// 对比校验是否正在跑（与备份任务**互相独立**，只防同时开两个对比）
+    pub comparing: AtomicBool,
+    /// 对比校验的取消标志 —— 独立于 `cancel`，
+    /// 这样「对比进行中取消备份」/「备份中取消对比」不会互相误伤。
+    pub compare_cancel: AtomicBool,
 }
 
 impl AppState {
@@ -22,6 +27,8 @@ impl AppState {
             busy: AtomicBool::new(false),
             cancel: AtomicBool::new(false),
             reply: Mutex::new(None),
+            comparing: AtomicBool::new(false),
+            compare_cancel: AtomicBool::new(false),
         }
     }
 
@@ -50,6 +57,29 @@ impl AppState {
 
     pub fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// 尝试占用对比槽位；已有对比在跑时返回 false
+    pub fn try_acquire_compare(&self) -> bool {
+        self.comparing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub fn release_compare(&self) {
+        self.comparing.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_comparing(&self) -> bool {
+        self.comparing.load(Ordering::SeqCst)
+    }
+
+    pub fn request_compare_cancel(&self) {
+        self.compare_cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn clear_compare_cancel(&self) {
+        self.compare_cancel.store(false, Ordering::SeqCst);
     }
 
     /// 设置当前模态框的回信通道

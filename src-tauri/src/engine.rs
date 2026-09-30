@@ -69,6 +69,58 @@ pub fn spawn_job(app: AppHandle, req: JobRequest) {
         .expect("无法创建后台工作线程");
 }
 
+// ================================================================ 对比校验（独立于备份任务）
+
+/// 启动对比校验（后台线程）。
+///
+/// 与 `spawn_job` 同构，但走**独立**的状态槽位（`comparing` / `compare_cancel`）
+/// 与独立事件，互不干扰 —— 对比是只读的，允许与备份任务同时跑。
+pub fn spawn_compare(
+    app: AppHandle,
+    left: String,
+    right: String,
+    opts: crate::compare::CompareOptions,
+) {
+    std::thread::Builder::new()
+        .name("cinebackup-compare".into())
+        .spawn(move || {
+            let st = app.state::<AppState>();
+            let mut throttle = Throttle::new(150);
+            let app_prog = app.clone();
+            let res = crate::compare::run_compare(
+                Path::new(&left),
+                Path::new(&right),
+                &opts,
+                &st.compare_cancel,
+                |p| {
+                    if throttle.ready() {
+                        events::emit_compare_progress(&app_prog, p);
+                    }
+                },
+            );
+            // 收尾强制补一次（小目录跑太快时，前面几次可能全被节流窗口吞掉）
+            let total = res.items.len() as u64;
+            events::emit_compare_progress(
+                &app,
+                &crate::compare::CompareProgress {
+                    phase: "done".into(),
+                    files_total: total,
+                    files_done: total,
+                    current: String::new(),
+                    bytes_hashed: res.hashed_bytes,
+                },
+            );
+            events::emit_log(
+                &app,
+                if res.ok { "ok" } else { "warn" },
+                format!("对比校验：{}", res.message),
+            );
+            events::emit_compare_done(&app, &res);
+            st.release_compare();
+        })
+        .expect("无法创建对比线程");
+}
+
 // ================================================================ 主流程
 
 fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, String> {

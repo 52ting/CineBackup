@@ -8,6 +8,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   EV, probePath, fsType, freeSpace, listDisks, startJob, replyDecision,
   cancelJob, saveTaskFile, loadTaskFile, on, fmtBytes, appVersion,
+  startCompare, cancelCompare,
 } from "./backend.js";
 import * as ui from "./ui.js";
 import { initDragDrop } from "./dnd.js";
@@ -49,6 +50,8 @@ const state = {
   /** @type {Array} 后端自动拉取到的磁盘 / 卷 */
   disks: [],
   running: false,
+  /** 对比校验是否进行中（与备份任务独立） */
+  comparing: false,
 };
 
 /* ==================== 磁盘自动拉取 ==================== */
@@ -1064,6 +1067,13 @@ function subscribe() {
     else ui.bumpCounter("skip");
   });
 
+  on(EV.COMPARE_PROGRESS, (p) => ui.renderCompareProgress(p));
+  on(EV.COMPARE_DONE, (p) => {
+    state.comparing = false;
+    ui.renderCompareResult(p);
+    ui.pushLog(p.ok ? "ok" : "warn", `对比校验完成：${p.message}`);
+  });
+
   on(EV.JOB_END, (p) => {
     state.running = false;
     state.phase = "idle";
@@ -1123,6 +1133,81 @@ function subscribe() {
     ui.renderStartButton({ running: state.running, queued: state.pendingRun });
   });
 }
+
+/* ==================== 对比校验（独立于备份任务） ==================== */
+
+/** 选一侧的路径：文件夹或单个文件 */
+async function pickComparePath(side, kind) {
+  try {
+    const picked = await open({
+      directory: kind === "dir",
+      multiple: false,
+      title: kind === "dir" ? "选择要对比的文件夹" : "选择要对比的文件",
+    });
+    if (!picked) return;
+    ui.setComparePath(side, Array.isArray(picked) ? picked[0] : picked);
+  } catch (e) {
+    ui.pushLog("error", `选择路径失败：${e}`);
+  }
+}
+
+async function startCompareNow() {
+  const { left, right } = ui.getComparePaths();
+  if (!left || !right) {
+    ui.pushLog("error", "请先选择左右两边的路径（文件或文件夹）。");
+    return;
+  }
+  if (state.comparing) {
+    ui.pushLog("warn", "已有对比正在进行，请等待完成或先取消。");
+    return;
+  }
+  ui.resetCompare();
+  ui.renderCompareBusy(true);
+  state.comparing = true;
+  try {
+    // 算法跟随「任务选项」里的选择；快速模式走独立勾选框
+    await startCompare(left, right, {
+      hashAlgo: $("optAlgo").value,
+      quick: ui.getCompareQuick(),
+    });
+    ui.pushLog(
+      "info",
+      `对比校验开始（${ui.getCompareQuick() ? "快速模式·只比大小" : "逐文件比对内容"}）：\n  左 ${left}\n  右 ${right}`
+    );
+  } catch (e) {
+    state.comparing = false;
+    ui.renderCompareBusy(false);
+    ui.pushLog("error", `启动对比失败：${e}`);
+  }
+}
+
+async function stopCompare() {
+  if (!state.comparing) return;
+  ui.pushLog("warn", "已请求取消对比…");
+  try {
+    await cancelCompare();
+  } catch (e) {
+    ui.pushLog("error", `取消对比失败：${e}`);
+  }
+}
+
+$("btnCompare").addEventListener("click", () => {
+  ui.showComparePanel(true);
+});
+document.querySelectorAll("[data-cmp-pick]").forEach((btn) => {
+  btn.addEventListener("click", () => pickComparePath(btn.dataset.side, btn.dataset.cmpPick));
+});
+$("cmpStartBtn").addEventListener("click", startCompareNow);
+$("cmpCancelBtn").addEventListener("click", stopCompare);
+$("cmpCloseBtn").addEventListener("click", () => {
+  // 关面板时若还在跑，顺手取消（否则后台跑完没人看结果）
+  if (state.comparing) stopCompare();
+  ui.showComparePanel(false);
+});
+$("cmpFilter").addEventListener("click", (ev) => {
+  const b = ev.target.closest(".flt");
+  if (b) ui.setCmpFilter(b.dataset.cf);
+});
 
 /* ==================== 底部区域拖动调整高度 ==================== */
 const BOTTOM_H_KEY = "cinebackup.bottomH";

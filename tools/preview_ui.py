@@ -100,7 +100,9 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     },
     invoke(cmd, args) {
       args = args || {};
-      if (cmd === "app_version") return Promise.resolve("1.0.1");
+      if (cmd === "app_version") return Promise.resolve("1.1.0");
+      if (cmd === "start_compare") { window.__cmpStartArgs = args; return Promise.resolve(null); }
+      if (cmd === "cancel_compare") { window.__cmpCancelCalled = true; return Promise.resolve(null); }
       if (cmd === "list_disks") return Promise.resolve(DISKS);
       if (cmd === "fs_type") return Promise.resolve("NTFS");
       if (cmd === "free_space") return Promise.resolve(10582813462528);
@@ -540,6 +542,92 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
         document.title = "PROBE_DONE";
       }, 700);
     }, 900);
+  }
+
+
+  // ?cmptest=1 → 回归场景：对比校验面板（打开 / 投结果 / 汇总计数 / 表格排序 / 筛选）。
+  if (qs.has("cmptest")) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const el = (id) => document.getElementById(id);
+    const vis = (id) => { const e = el(id); return !!e && !e.classList.contains("hidden"); };
+    const rowCount = () => document.querySelectorAll("#cmpTbody tr[data-cmp]").length;
+
+    setTimeout(async () => {
+      const out = {};
+      // ① 点「对比校验」→ 面板打开
+      el("btnCompare").click();
+      await sleep(120);
+      out.面板已打开 = vis("compareModal");
+      out.有左右两个输入框 = !!el("cmpLeft") && !!el("cmpRight");
+
+      // ② 直接灌一份模拟结果（走 ui.renderCompareResult 的真实渲染路径）
+      window.__cbEmit("cb:compare-done", {
+        left: "D:////////素材盘A", right: "E:////////备份盘B",
+        mode: "dir", algo: "SHA-256", quick: false,
+        items: [
+          { rel: "clip_001.mxf", status: "same", leftSize: 1073741824, rightSize: 1073741824,
+            leftHash: "aa11", rightHash: "aa11", message: "内容一致（SHA-256 相同）" },
+          { rel: "clip_002.mxf", status: "different", leftSize: 2147483648, rightSize: 2147483648,
+            leftHash: "bb22", rightHash: "cc33", message: "内容不一致（大小相同但哈希不同）" },
+          { rel: "only_left/raw.r3d", status: "left_only", leftSize: 536870912, rightSize: 0,
+            leftHash: "", rightHash: "", message: "仅左侧存在" },
+          { rel: "only_right/proxy.mov", status: "right_only", leftSize: 0, rightSize: 268435456,
+            leftHash: "", rightHash: "", message: "仅右侧存在" },
+        ],
+        same: 1, different: 1, leftOnly: 1, rightOnly: 1, errors: 0,
+        leftBytes: 3758096384, rightBytes: 3489660928, hashedBytes: 4294967296,
+        elapsedSecs: 12.3, cancelled: false, ok: false,
+        message: "存在差异：不一致 1 · 仅左侧 1 · 仅右侧 1 · 读取失败 0",
+      });
+      await sleep(200);
+
+      out.汇总已显示 = vis("cmpSummary");
+      out.判定文案 = (el("cmpSummary").querySelector(".cmp-verdict") || {}).textContent || "";
+      out.判定是差异 = /存在差异/.test(out.判定文案);
+      out.表格行数 = rowCount();
+      out.结果区已显示 = vis("cmpResultWrap");
+      // 差异排前面：第一行不应是「一致」
+      // ⚠️ 别用文本匹配判断（"一致" 也是 "不一致" 的子串），直接看 data-cmp
+      const firstRow = document.querySelector("#cmpTbody tr[data-cmp]");
+      out.第一行是差异 = !!firstRow && firstRow.dataset.cmp === "diff";
+      out.表格顺序 = Array.from(document.querySelectorAll("#cmpTbody tr[data-cmp]"))
+        .map((tr) => tr.dataset.cmp).join(",");
+      out.差异行数 = document.querySelectorAll('#cmpTbody tr[data-cmp="diff"]').length;
+      out.一致行数 = document.querySelectorAll('#cmpTbody tr[data-cmp="same"]').length;
+
+      // ③ 筛选
+      document.querySelector('#cmpFilter .flt[data-cf="same"]').click();
+      await sleep(80);
+      const visible = (sel) => Array.from(document.querySelectorAll(sel))
+        .filter((tr) => !tr.classList.contains("row-filtered")).length;
+      out.筛选一致_可见行 = visible("#cmpTbody tr[data-cmp]");
+      out.筛选一致_只显示一致 = visible('#cmpTbody tr[data-cmp="same"]') === 1 &&
+        visible('#cmpTbody tr[data-cmp="diff"]') === 0;
+      document.querySelector('#cmpFilter .flt[data-cf="all"]').click();
+      await sleep(80);
+      out.切回全部_可见行 = visible("#cmpTbody tr[data-cmp]");
+
+      // ④ 点「开始对比」→ 应带 hashAlgo/quick 调 start_compare；缺路径时不该调用
+      el("cmpLeft").value = "D:////////素材盘A";
+      el("cmpRight").value = "E:////////备份盘B";
+      el("cmpQuick").checked = true;
+      el("optAlgo").value = "xxh64";
+      el("cmpStartBtn").click();
+      await sleep(200);
+      const a = window.__cmpStartArgs || {};
+      out.开始对比_已调用 = !!window.__cmpStartArgs;
+      out.开始对比_左右路径 = [a.left, a.right].join(" | ");
+      out.开始对比_算法透传 = (a.options || {}).hashAlgo;
+      out.开始对比_快速模式透传 = (a.options || {}).quick === true;
+
+      if (qs.has("probe")) {
+        const pre = document.createElement("pre");
+        pre.id = "probeOut";
+        pre.textContent = JSON.stringify(out, null, 2);
+        document.body.appendChild(pre);
+      }
+      document.title = "PROBE_DONE";
+    }, 1400);
   }
 
 
@@ -1036,6 +1124,11 @@ def main():
         help="跑 ?rowtest=1：中栏传输列表超过 8 行不被压扁 / 可滚动 的回归断言（不截图）",
     )
     ap.add_argument(
+        "--cmptest",
+        action="store_true",
+        help="跑 ?cmptest=1：对比校验面板 的回归断言（不截图）",
+    )
+    ap.add_argument(
         "--uitest",
         action="store_true",
         help="跑 ?uitest=1：取消确认 / 清空任务 / 清空结果 / 选项互斥 / 错误倒计时 的回归断言（不截图）",
@@ -1048,14 +1141,16 @@ def main():
             args.probe = True
         args.run = args.dnd = args.drop = False
 
-    if args.rowtest or args.uitest:
-        args.probe = True
-        # 这两个场景自己造状态，不需要真跑任务 / 拖放
+    if args.rowtest or args.uitest or args.cmptest:
+        # 带 --shot 时当截图场景跑（不写 probeOut），否则当断言场景
+        if not args.shot:
+            args.probe = True
+        # 这几个场景自己造状态，不需要真跑任务 / 拖放
         args.run = args.dnd = args.drop = args.queuetest = False
 
     if args.probe or args.queuetest:
         # 回归场景固定需要：运行中 + 往左栏拖一次（新源）+ 排队探针
-        if not (args.rowtest or args.uitest):
+        if not (args.rowtest or args.uitest or args.cmptest):
             args.run = args.dnd = args.drop = True
     if args.filtertest:
         # 筛选/拖高场景只关心底部面板，不需要跑任务
@@ -1109,7 +1204,9 @@ def main():
         parts.append("rowtest=1")
     if args.uitest:
         parts.append("uitest=1")
-    if args.queuetest or (args.probe and not args.filtertest and not args.rowtest and not args.uitest):
+    if args.cmptest:
+        parts.append("cmptest=1")
+    if args.queuetest or (args.probe and not args.filtertest and not args.rowtest and not args.uitest and not args.cmptest):
         parts.append("queuetest=1")
     if args.probe:
         parts.append("probe=1")

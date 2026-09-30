@@ -17,6 +17,8 @@ export const EV = {
   COPY_ERROR: "cb:copy-error",
   FILE_RESULT: "cb:file-result",
   JOB_END: "cb:job-end",
+  COMPARE_PROGRESS: "cb:compare-progress",
+  COMPARE_DONE: "cb:compare-done",
 };
 
 /** Tauri command 名称（与 Rust 端 commands.rs 一一对应） */
@@ -32,6 +34,8 @@ export const CMD = {
   SAVE_TASK: "save_task_file",
   LOAD_TASK: "load_task_file",
   IS_BUSY: "is_busy",
+  START_COMPARE: "start_compare",
+  CANCEL_COMPARE: "cancel_compare",
 };
 
 /**
@@ -90,6 +94,22 @@ export function loadTaskFile(path) {
 }
 export function isBusy() {
   return invoke(CMD.IS_BUSY);
+}
+
+/**
+ * 启动对比校验（只读，独立于备份任务）。
+ * 进度 / 结果通过 `cb:compare-progress` / `cb:compare-done` 事件推送。
+ * @param {string} left 左侧路径（文件或文件夹）
+ * @param {string} right 右侧路径（类型需与左侧一致）
+ * @param {{hashAlgo?:string, quick?:boolean}} options
+ */
+export function startCompare(left, right, options = {}) {
+  return invoke(CMD.START_COMPARE, { left, right, options });
+}
+
+/** 取消正在进行的对比 */
+export function cancelCompare() {
+  return invoke(CMD.CANCEL_COMPARE);
 }
 
 /** 订阅某个后端事件，返回 unlisten 函数 */
