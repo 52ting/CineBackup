@@ -1,5 +1,5 @@
 /* ============================================================
-   CineBackup · 双主题 UI
+   魔王拷贝（MowangCopy）· 双主题 UI
    主题：跟随系统 prefers-color-scheme；也可用 <html data-theme="dark|light"> 强制
    布局：顶栏 / 三栏（源 · 磁盘或传输 · 目标）/ 底部（日志 · 校验结果）
    ============================================================ */
@@ -144,7 +144,7 @@ body {
   flex: none;
 }
 .tb-left { display: flex; align-items: center; gap: 9px; }
-.logo { font-size: 17px; color: var(--primary); line-height: 1; }
+.logo { width: 18px; height: 18px; display: block; border-radius: 4px; flex: 0 0 auto; }
 .app-name { font-size: 13.5px; font-weight: 600; letter-spacing: .3px; }
 .ver {
   font-size: 10.5px;

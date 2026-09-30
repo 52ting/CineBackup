@@ -144,13 +144,27 @@ def cmd_status(_args) -> int:
     return 0
 
 
+# 打包产物名前缀 = tauri.conf.json 的 productName（中文，app 在 Finder / Dock 里显示这个）
+PRODUCT = "魔王拷贝"
+# 上传到 GitHub 的资产名前缀。
+# ⚠️ GitHub 会把 Release 资产名里的**非 ASCII 字符全部剥掉**（实测：
+#    「魔王拷贝_1.0.0_universal.dmg」→「_1.0.0_universal.dmg」），所以本地文件
+#    保持中文名（Tauri 产出什么就是什么），上传时换成 ASCII 别名。
+PRODUCT_ASCII = "MowangCopy"
+
+
+def ascii_asset_name(name: str) -> str:
+    """本地产物名 → GitHub 资产名（非 ASCII 前缀换成 ASCII 别名）。"""
+    return name.replace(PRODUCT, PRODUCT_ASCII)
+
+
 def default_assets(v: str) -> list:
     return [
         os.path.join(PROJ, "src-tauri", "target", "release", "bundle", "nsis",
-                     "CineBackup_%s_x64-setup.exe" % v),
+                     "%s_%s_x64-setup.exe" % (PRODUCT, v)),
         os.path.join(PROJ, "src-tauri", "target", "release", "bundle", "msi",
-                     "CineBackup_%s_x64_en-US.msi" % v),
-        os.path.join(PROJ, "cinebackup-builds", "CineBackup_%s_universal.dmg" % v),
+                     "%s_%s_x64_en-US.msi" % (PRODUCT, v)),
+        os.path.join(PROJ, "cinebackup-builds", "%s_%s_universal.dmg" % (PRODUCT, v)),
         os.path.join(os.path.dirname(PROJ), "cinebackup-%s-src.zip" % v),
     ]
 
@@ -208,17 +222,20 @@ def build_notes(v: str, tag: str) -> str:
                              timeout=30).stdout.strip() or "- （无提交记录）"
         heading = "### 本次变更（最近 20 条提交）"
 
-    return "## CineBackup %s\n\n%s\n\n%s\n\n### 下载说明\n\n" \
+    return "## %s %s（MowangCopy）\n\n%s\n\n%s\n\n### 下载说明\n\n" \
            "| 平台 | 文件 | 说明 |\n|---|---|---|\n" \
-           "| Windows | `CineBackup_%s_x64-setup.exe` | 推荐，双击安装 |\n" \
-           "| Windows | `CineBackup_%s_x64_en-US.msi` | 企业批量部署用 |\n" \
-           "| macOS | `CineBackup_%s_universal.dmg` | 通用二进制（Intel + Apple Silicon）|\n" \
+           "| Windows | `%s_%s_x64-setup.exe` | 推荐，双击安装 |\n" \
+           "| Windows | `%s_%s_x64_en-US.msi` | 企业批量部署用 |\n" \
+           "| macOS | `%s_%s_universal.dmg` | 通用二进制（Intel + Apple Silicon）|\n" \
            "| 源码 | `cinebackup-%s-src.zip` | 含 macOS 打包脚本与安装指南 |\n\n" \
            "> macOS 包未签名。首次打开若提示「已损坏」或「无法验证开发者」，\n" \
            "> 到「系统设置 → 隐私与安全性」点「仍要打开」，或执行：\n" \
-           "> `xattr -dr com.apple.quarantine /Applications/CineBackup.app`\n" \
+           "> `xattr -dr com.apple.quarantine \"/Applications/%s.app\"`\n" \
            "> **请用 dmg 安装，不要把 .app 从产物 zip 里直接拖出来**（会丢可执行权限位）。\n" \
-           % (v, heading, log, v, v, v, v)
+           "> 资产名用 ASCII（`MowangCopy_*`）是因为 GitHub 会剥掉非 ASCII 资产名；\n" \
+           "> 装好后应用名仍是「%s」。\n" \
+           % (PRODUCT, v, heading, log,
+              PRODUCT_ASCII, v, PRODUCT_ASCII, v, PRODUCT_ASCII, v, v, PRODUCT, PRODUCT)
 
 
 def cmd_publish(args) -> int:
@@ -239,7 +256,7 @@ def cmd_publish(args) -> int:
                               capture_output=True, text=True, timeout=20).stdout.strip()
         payload = json.dumps({
             "tag_name": tag,
-            "name": "CineBackup %s" % v,
+            "name": "%s %s" % (PRODUCT, v),
             "body": build_notes(v, tag),
             "draft": bool(args.draft),
             "prerelease": bool(args.prerelease),
@@ -256,7 +273,8 @@ def cmd_publish(args) -> int:
     existing = {a["name"]: a for a in rel.get("assets", [])}
     uploaded = skipped = failed = 0
     for f in files:
-        name = os.path.basename(f)
+        # 本地是真名（中文），上传到 GitHub 换成 ASCII（见 ascii_asset_name 注释）
+        name = ascii_asset_name(os.path.basename(f))
         size = os.path.getsize(f)
         old = existing.get(name)
         if old and old["size"] == size:
@@ -312,7 +330,7 @@ def cmd_verify(_args) -> int:
     print()
 
     remote = {a["name"]: a for a in rel.get("assets", [])}
-    local = {os.path.basename(p): p for p in default_assets(v)}
+    local = {ascii_asset_name(os.path.basename(p)): p for p in default_assets(v)}
     ok = True
     for name, path in local.items():
         a = remote.get(name)
@@ -344,7 +362,7 @@ def cmd_verify(_args) -> int:
 
 def main() -> int:
     global TOK
-    ap = argparse.ArgumentParser(description="发布 CineBackup 到 GitHub Release")
+    ap = argparse.ArgumentParser(description="发布 %s 到 GitHub Release" % PRODUCT)
     sub = ap.add_subparsers(dest="cmd")
 
     sub.add_parser("status", help="列出 Release 与资产")

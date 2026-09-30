@@ -47,7 +47,7 @@ pub struct LoadedTask {
 /// 保存任务到指定 JSON 文件（UTF-8、带缩进，方便人工查看/版本管理）
 pub fn save_task(path: &Path, mut task: TaskFile) -> Result<(), String> {
     task.version = TASK_FORMAT_VERSION;
-    task.app = "CineBackup".into();
+    task.app = "魔王拷贝".into();
     if task.created_at.is_empty() {
         task.created_at = now_iso8601();
     }
@@ -68,7 +68,7 @@ pub fn load_task(path: &Path) -> Result<LoadedTask, String> {
 
     if task.version > TASK_FORMAT_VERSION {
         return Err(format!(
-            "任务文件版本 {} 高于当前程序支持的 {}，请升级 CineBackup。",
+            "任务文件版本 {} 高于当前程序支持的 {}，请升级魔王拷贝。",
             task.version, TASK_FORMAT_VERSION
         ));
     }
@@ -153,7 +153,7 @@ mod tests {
         save_task(&f, task).unwrap();
         let loaded = load_task(&f).unwrap();
         assert_eq!(loaded.task.version, TASK_FORMAT_VERSION);
-        assert_eq!(loaded.task.app, "CineBackup");
+        assert_eq!(loaded.task.app, "魔王拷贝");
         assert_eq!(loaded.task.sources.len(), 1);
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
         let _ = fs::remove_dir_all(&dir);

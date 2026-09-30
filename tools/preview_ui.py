@@ -100,7 +100,7 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     },
     invoke(cmd, args) {
       args = args || {};
-      if (cmd === "app_version") return Promise.resolve("0.6.0");
+      if (cmd === "app_version") return Promise.resolve("1.0.0");
       if (cmd === "list_disks") return Promise.resolve(DISKS);
       if (cmd === "fs_type") return Promise.resolve("NTFS");
       if (cmd === "free_space") return Promise.resolve(10582813462528);

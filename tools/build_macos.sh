@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# CineBackup —— macOS 一键打包（产出 .app + .dmg）
+# 魔王拷贝（MowangCopy）—— macOS 一键打包（产出 .app + .dmg）
 #
 #   bash tools/build_macos.sh                 # 本机架构，app + dmg
 #   UNIVERSAL=1 bash tools/build_macos.sh     # 通用二进制（Intel + Apple Silicon）
@@ -98,15 +98,15 @@ echo "[bundle]"
 ls -lh "$REL/bundle/macos" 2>/dev/null || echo "  （没有 .app）"
 ls -lh "$REL/bundle/dmg" 2>/dev/null || echo "  （没有 .dmg）"
 
-APP="$REL/bundle/macos/CineBackup.app"
+APP="$REL/bundle/macos/魔王拷贝.app"
 
 echo ""
 echo "────────────────────────────────────────────────────────────────"
 echo "装到本机（未签名，首次打开会被 Gatekeeper 拦，必须去掉隔离属性）："
 echo ""
 echo "  cp -R \"$APP\" /Applications/"
-echo "  xattr -dr com.apple.quarantine /Applications/CineBackup.app"
-echo "  open /Applications/CineBackup.app"
+echo "  xattr -dr com.apple.quarantine "/Applications/魔王拷贝.app""
+echo "  open "/Applications/魔王拷贝.app""
 echo ""
 echo "分发给别人的 Mac：把 $REL/bundle/dmg 里的 .dmg 发过去，"
 echo "对方拖进「应用程序」后，同样要跑一次那条 xattr 命令。"

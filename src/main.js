@@ -924,7 +924,7 @@ async function saveTask() {
     path = await save({
       title: "保存任务文件",
       defaultPath: "cinebackup-task.json",
-      filters: [{ name: "CineBackup 任务", extensions: ["json"] }],
+      filters: [{ name: "魔王拷贝 任务", extensions: ["json"] }],
     });
   } catch (e) {
     ui.pushLog("error", `保存对话框失败：${e}`);
@@ -933,7 +933,7 @@ async function saveTask() {
   if (!path) return;
   const task = {
     version: 1,
-    app: "CineBackup",
+    app: "魔王拷贝",
     createdAt: new Date().toISOString(),
     targetDir: state.target?.path || "",
     sources: state.sources.map((s) => s.path),
@@ -953,7 +953,7 @@ async function loadTask() {
     path = await open({
       multiple: false,
       title: "加载任务文件",
-      filters: [{ name: "CineBackup 任务", extensions: ["json"] }],
+      filters: [{ name: "魔王拷贝 任务", extensions: ["json"] }],
     });
   } catch (e) {
     ui.pushLog("error", `打开对话框失败：${e}`);
@@ -1330,7 +1330,7 @@ appVersion()
     const el = $("appVersion");
     if (el && v) {
       el.textContent = `v${v}`;
-      el.title = `CineBackup v${v}`;
+      el.title = `魔王拷贝 v${v}`;
     }
   })
   .catch(() => {
@@ -1352,5 +1352,5 @@ setInterval(() => {
 setInterval(refreshLock, 400);
 ui.pushLog(
   "info",
-  "CineBackup 就绪。中栏列的是本机磁盘：点磁盘选择「当源 / 当目标」，也可以直接把文件 / 文件夹拖进左右两栏。"
+  "魔王拷贝 就绪。中栏列的是本机磁盘：点磁盘选择「当源 / 当目标」，也可以直接把文件 / 文件夹拖进左右两栏。"
 );

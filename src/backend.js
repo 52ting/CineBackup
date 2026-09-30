@@ -118,7 +118,7 @@ export async function onDragDrop(handler) {
     return unlisten;
   } catch (err) {
     // 非 Tauri 环境（例如浏览器里跑 UI 预览）静默降级，只留一条诊断日志
-    console.warn("[CineBackup] 拖放事件订阅不可用：", err);
+    console.warn("[魔王拷贝] 拖放事件订阅不可用：", err);
     onDragDrop.subscribed = false;
     return () => {};
   }

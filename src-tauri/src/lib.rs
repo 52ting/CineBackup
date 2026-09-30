@@ -1,4 +1,4 @@
-//! CineBackup —— 影视素材 / DCP 跨平台备份工具（Tauri 2 + Rust）
+//! 魔王拷贝（MowangCopy）—— 影视素材 / DCP 跨平台备份工具（Tauri 2 + Rust）
 //!
 //! 模块划分：
 //! - `disks`    磁盘 / 卷枚举（自动拉取本机硬盘，含卷标、容量、只读标志）
@@ -48,5 +48,5 @@ pub fn run() {
             commands::load_task_file,
         ])
         .run(tauri::generate_context!())
-        .expect("CineBackup 启动失败");
+        .expect("魔王拷贝 启动失败");
 }

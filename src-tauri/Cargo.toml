@@ -1,6 +1,6 @@
 [package]
 name = "cinebackup"
-version = "0.6.0"
+version = "1.0.0"
 description = "CineBackup - 影视素材 / DCP 跨平台备份工具"
 authors = ["Ronnie"]
 license = "MIT"

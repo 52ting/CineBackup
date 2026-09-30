@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "cinebackup"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "serde",
