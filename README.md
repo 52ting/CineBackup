@@ -489,6 +489,19 @@ open /Applications/CineBackup.app
 必须执行上面那条 `xattr`（或去「系统设置 → 隐私与安全性 → 仍要打开」点一下）。
 把 dmg 里的图标拖进「应用程序」也一样，拖完照样要跑一次 `xattr`。
 
+**有 Apple 开发者账号后，想免掉 Gatekeeper 提示（签名 + 公证）：**
+
+```bash
+# 1) 钥匙串安装「Developer ID Application」证书（Xcode 或 Apple 开发者后台申请）
+# 2) 编辑 tools/sign_notarize.sh 里的三个占位变量（DEVELOPER_ID / APPLE_ID / APPLE_TEAM_ID）
+# 3) 先打包出 .app，再执行签名 + 公证 + 盖章：
+UNIVERSAL=1 bash tools/build_macos.sh
+bash tools/sign_notarize.sh
+```
+
+脚本会依次执行 `codesign`（含 `--options runtime` 硬运行时）→ `notarytool submit --wait`
+→ `stapler staple`，并用 `spctl --assess` 做最终校验；公证需要 Apple ID 的「App 专用密码」。
+
 ### 5.6 macOS 上的其他注意事项
 
 | 事项 | 说明 |

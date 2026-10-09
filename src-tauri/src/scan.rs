@@ -6,11 +6,16 @@
 //! ## 预判规则（对应断点续传规则）
 //! ```text
 //! 目标不存在                → Copy      完整拷贝
-//! 目标存在，大小不一致       → Resume    断点续传（从目标末尾续写）
+//! 目标存在，目标更小         → Resume    断点续传（从目标末尾续写）
+//! 目标存在，目标比源还大     → Overwrite 从头完整重写（绝不可能是同一份的半截）
 //! 目标存在，大小一致
 //!    ├ 内容哈希相同         → Skip      跳过
 //!    └ 内容哈希不同         → Overwrite 覆盖
 //! ```
+//!
+//! ⚠️ 预判必须与 `posix::copy_data_fork` 的运行时判定一致：
+//! 「目标比源还大」在拷贝层会强制从头重写，因此这里**不能**再预判成 Resume，
+//! 否则 Dry Run 显示「续传」而实际动作是「重写」，进度统计也会错（needed_bytes 为 0）。
 //!
 //! 内容哈希用哪种算法由 `JobOptions.hash_algo` 决定（默认 SHA-256）。
 
@@ -22,6 +27,9 @@ use crate::events::ScanProgress;
 use crate::hash;
 use crate::types::{JobOptions, PlanItem, PlanStats, PlannedAction};
 use crate::util::{file_name_of, file_name_raw, join_relative, path_to_string};
+// 仅在 macOS 预清洗（APFS 拒绝未分配码位）时用到，避免 Windows 构建报 unused import
+#[cfg(target_os = "macos")]
+use crate::util::escape_path_bytes;
 use crate::walk::{self, PathKind};
 
 #[derive(Debug)]
@@ -107,6 +115,9 @@ pub fn build_plan(
             PathKind::File => {
                 // 用原始字节拼目标路径：file_name_of 会把非法字节换成 �，导致 dst 从一开始就污染
                 let dst = target.join(file_name_raw(&src_root));
+                // APFS 预清洗：源名含未分配 Unicode 码位时，目标名提前换成可写名字，
+                // 避免「每次重跑都因名字对不上而重复拷贝」（见 pre_sanitize_dst 说明）
+                let dst = pre_sanitize_dst(&mut plan, &src_root, dst);
                 let size = walk::file_size(&src_root);
                 // 只查「文件名」这一层，别把盘符/绝对路径前缀（Windows 的 C:）也当坏名字
                 let leaf = file_name_of(&src_root);
@@ -120,6 +131,8 @@ pub fn build_plan(
                 // 目录源：整体复制到 目标/目录名/...（原始字节）
                 let base_name = file_name_raw(&src_root);
                 let dst_root = target.join(&base_name);
+                // APFS 预清洗：目录名含被拒码位同样会 EILSEQ，且 walk 子路径继承清洗后的根
+                let dst_root = pre_sanitize_dst(&mut plan, &src_root, dst_root);
                 plan.dirs.push(dst_root.clone());
 
                 // 先在本地收集，闭包结束后统一做去重入列（避免同时可变借用 plan 的多个部分）
@@ -204,11 +217,23 @@ pub fn build_plan(
         };
 
         // 目标存在 —— 按断点续传规则预判
-        let (suggested, reason, hash_checked) = if existing_size != size {
+        // ⚠️ 用 `<` / `>` 而非 `!=` 细分：目标比源还大时绝不可能续传（posix 会强制重写），
+        // 这里必须预判成 Overwrite，否则 Dry Run / 进度统计（needed_bytes）与实际动作不一致。
+        let (suggested, reason, hash_checked) = if existing_size < size {
             (
                 PlannedAction::Resume,
                 format!(
-                    "大小不一致（源 {} vs 目标 {}）→ 断点续传",
+                    "目标更小（半截文件，源 {} vs 目标 {}）→ 断点续传",
+                    crate::util::human_bytes(size),
+                    crate::util::human_bytes(existing_size)
+                ),
+                false,
+            )
+        } else if existing_size > size {
+            (
+                PlannedAction::Overwrite,
+                format!(
+                    "目标比源还大（源 {} vs 目标 {}）→ 从头完整重写",
                     crate::util::human_bytes(size),
                     crate::util::human_bytes(existing_size)
                 ),
@@ -240,10 +265,23 @@ pub fn build_plan(
                     false,
                 ),
                 Err(e) => {
-                    // 读取失败（权限 / 盘掉线）：保守按「覆盖」处理，交给拷贝阶段报错
-                    plan.warnings
-                        .push(format!("哈希比对失败，按覆盖处理：{} （{e}）", path_to_string(&src)));
-                    (PlannedAction::Overwrite, format!("哈希比对失败：{e}"), false)
+                    // 读取失败：先分清是哪一侧读不了，不能笼统「按覆盖」。
+                    // 源读不了 → 拷贝阶段必然还会再报错，这里按 Copy 预判，让真实错误
+                    //            在拷贝时暴露，而不是把「源已坏」误报成「覆盖目标」。
+                    // 目标读不了 → 覆盖是合理的（反正要重写），但明确标注是目标侧问题。
+                    if std::fs::File::open(&src).is_err() {
+                        plan.warnings.push(format!(
+                            "源文件读取失败：{} （{e}），拷贝阶段将重试并报错",
+                            path_to_string(&src)
+                        ));
+                        (PlannedAction::Copy, format!("源读取失败：{e}"), false)
+                    } else {
+                        plan.warnings.push(format!(
+                            "目标文件读取失败，按覆盖处理：{} （{e}）",
+                            path_to_string(&src)
+                        ));
+                        (PlannedAction::Overwrite, format!("目标读取失败：{e}"), false)
+                    }
                 }
             }
         };
@@ -352,9 +390,42 @@ fn push_unique(
     let key = path_to_string(&dst);
     if seen.contains(&key) {
         plan.warnings
-            .push(format!("目标路径重复，已忽略该源：{} → {}", path_to_string(src), key));
+            .push(format!("目标路径重复（同名冲突）：已忽略该源，保留更早加入的版本：{} → {}", path_to_string(src), key));
         return;
     }
     seen.insert(key);
     raw.push((src.to_path_buf(), dst, size, src_idx));
+}
+
+/// APFS 目标名预清洗（疑点：清洗映射缺失）
+///
+/// 问题背景：macOS 的 APFS 会拒绝「合法 UTF-8 里的未分配 Unicode 码位」的文件名，
+/// 写入时抛 EILSEQ（errno 92）。旧逻辑是拷贝中途失败 → 自动换用清洗名（U+FFFD）重试，
+/// 但**清洗后的名字没有持久化到任何地方**：下次重跑同一任务时，源文件名（原始码位）
+/// 在目标盘上永远找不到自己上次写的文件（那是 U+FFFD 版），于是每跑一次都重复完整拷贝。
+///
+/// 修复：预扫描阶段（建计划时）就把目标路径换成清洗名，让「计划 → 拷贝 → 校验 → 下次
+/// 重跑」全程使用同一个名字。两个源清洗后撞名时由 `push_unique` 去重兜底（后到的被忽略
+/// 并警告），不会再出现「两个不同源各自清洗后写到同一个文件、互相覆盖」。
+///
+/// 仅 macOS 需要（APFS 才拒绝未分配码位）；Windows NTFS 接受这些码位，保留原名。
+#[cfg(target_os = "macos")]
+fn pre_sanitize_dst(plan: &mut Plan, src: &Path, dst: PathBuf) -> PathBuf {
+    if crate::util::path_has_rejected_codepoint(&dst) {
+        let cleaned = crate::util::sanitize_path_for_filesystem(&dst);
+        if cleaned != dst {
+            plan.warnings.push(format!(
+                "源路径含 APFS 会拒绝的未分配 Unicode 码位，目标将写入清洗后的名字：{} → {}",
+                escape_path_bytes(src),
+                path_to_string(&cleaned)
+            ));
+            return cleaned;
+        }
+    }
+    dst
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pre_sanitize_dst(_plan: &mut Plan, _src: &Path, dst: PathBuf) -> PathBuf {
+    dst
 }

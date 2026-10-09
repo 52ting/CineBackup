@@ -68,6 +68,12 @@ fi
 
 say "开始打包（首次编译 Tauri 依赖约 3–10 分钟，之后增量很快）"
 
+# 显式钉住部署目标，与 tauri.conf.json 的 macOS.minimumSystemVersion=10.15 保持一致，
+# 避免依赖链里的构建脚本（tao/objc2 等）自作主张用更高的部署目标。
+# 若发现 Mach-O 里有异常 load command（如 LC_VERSION_MIN_IPHONEOS），
+# 先在这里加 export IPHONEOS_DEPLOYMENT_TARGET= 清掉，再 clean 重验。
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-10.15}"
+
 if [ "${UNIVERSAL:-0}" = "1" ]; then
   say "通用二进制模式：补齐两个 Rust target"
   rustup target add x86_64-apple-darwin aarch64-apple-darwin
@@ -110,6 +116,11 @@ echo "  open "/Applications/魔王拷贝.app""
 echo ""
 echo "分发给别人的 Mac：把 $REL/bundle/dmg 里的 .dmg 发过去，"
 echo "对方拖进「应用程序」后，同样要跑一次那条 xattr 命令。"
+echo ""
+echo "想免去 Gatekeeper 提示（有 Apple 开发者账号时）："
+echo "  1) 钥匙串安装「Developer ID Application」证书"
+echo "  2) 编辑 tools/sign_notarize.sh 里的占位变量，然后："
+echo "     bash tools/sign_notarize.sh"
 echo ""
 echo "首次备份到外置盘 / 桌面 / 文档时，系统可能弹「想访问…」的授权框 —— 允许即可。"
 echo "往 NTFS 盘写需要装第三方驱动（Paragon / Tuxera / Mounty），macOS 原生 NTFS 只读。"

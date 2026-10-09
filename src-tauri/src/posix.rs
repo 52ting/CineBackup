@@ -866,6 +866,12 @@ fn copy_xattrs_macos(
             Ok(c) => c,
             Err(_) => continue,
         };
+        // 跳过隔离属性：引擎在拷完数据后会 remove_quarantine(&dst) 清掉
+        // “从网上下载 / 未经 Gatekeeper 验证”的标记；如果这里又原样拷回源上的
+        // com.apple.quarantine，前面的清理就白做了，目标仍会被 Gatekeeper 拦。
+        if cname.as_bytes() == QUARANTINE_XATTR.as_bytes() {
+            continue;
+        }
         // 逐个读值
         let vsize = unsafe {
             libc::getxattr(

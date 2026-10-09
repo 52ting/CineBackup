@@ -61,10 +61,15 @@ jobs:
 
       - name: 打包（通用二进制）
         if: ${{ github.event_name == 'push' || inputs.universal }}
+        env:
+          # 与 tauri.conf.json 的 minimumSystemVersion=10.15 对齐，避免依赖构建脚本乱选部署目标
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
         run: npm run tauri build -- --target universal-apple-darwin
 
       - name: 打包（仅本机架构）
         if: ${{ github.event_name == 'workflow_dispatch' && !inputs.universal }}
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
         run: npm run tauri build
 
       - name: 上传产物（通用二进制）

@@ -25,7 +25,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' __TAURI_SCRIPT_NONCE__",
+      "devCsp": null
     }
   },
   "bundle": {
@@ -43,7 +44,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "infoPlist": "Info.plist"
     },
     "windows": {
       "webviewInstallMode": {

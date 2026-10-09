@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        魔王拷贝 macOS Info.plist 覆盖模板。
+
+        由 tauri.conf.json 的 bundle.macOS.infoPlist 引用；tauri-build 会先生成
+        默认 Info.plist，再与本文件的键做「键级合并」（本文件覆盖同名键，缺失键保留默认）。
+
+        这里只写需要显式钉住的键：
+        - LSMinimumSystemVersion：与 tauri.conf.json 的 minimumSystemVersion 一致；
+        - 故意不写 LSRequiresCarbon（tauri-build 默认模板里带了这个早已无用的过时键，
+          写覆盖模板后产物里就不会再有它）。
+    -->
+    <key>LSMinimumSystemVersion</key>
+    <string>10.15</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+</dict>
+</plist>
