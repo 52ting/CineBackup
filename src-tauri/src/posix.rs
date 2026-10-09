@@ -238,26 +238,35 @@ impl DataFile {
 
     // ---------------------------------------------------------- 位置 / 同步
 
-    /// 当前 Data Fork 长度（`lseek(fd, 0, SEEK_END)`）。
+    /// 当前 Data Fork 长度（走 `fstat`，**不移动读位置**）。
     ///
-    /// 用 lseek 而不是 `stat` 的 `st_size`：POSIX 下 lseek 给的是这个 fd
-    /// 对应的数据流末尾，语义最直接，也不受平台 stat 结构差异影响。
+    /// ⚠️⚠️ **绝对不要改用 `lseek(fd, 0, SEEK_END)`**。
+    /// lseek 的副作用是**把文件偏移移到末尾** —— 拿它当「查长度」用，
+    /// 调用者手上这个 fd 的读位置就被偷偷改了。
+    ///
+    /// 这个坑在 CI 上真实发生过（而且只在 macOS 上暴露）：
+    /// `copy_data_fork` 开头 `src_len = src_f.size()?`，随后走续传分支时
+    /// `prefix_matches` 从「已经被挪到末尾」的位置读 → 读到 0 字节 →
+    /// 判成「前缀不一致」→ **每一次合法续传都被升级成全量重写**。
+    /// 本机 Windows 之所以看不出来，是因为当时的 Windows 分支用
+    /// `seek(Current)` 把位置存下来又还原了 —— 两个平台行为不一致，
+    /// 典型的「本地绿、CI 红」。
+    ///
+    /// `fstat` 只查询、不改状态，是这里的唯一正确做法。
     pub fn size(&mut self) -> io::Result<u64> {
         #[cfg(unix)]
         {
-            let off = unsafe { libc::lseek(self.fd, 0, libc::SEEK_END) };
-            if off < 0 {
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            let r = unsafe { libc::fstat(self.fd, &mut st) };
+            if r != 0 {
                 return Err(io::Error::last_os_error());
             }
-            Ok(off as u64)
+            Ok(st.st_size as u64)
         }
         #[cfg(not(unix))]
         {
-            use std::io::{Seek, SeekFrom};
-            let cur = self.file.seek(SeekFrom::Current(0))?;
-            let end = self.file.seek(SeekFrom::End(0))?;
-            self.file.seek(SeekFrom::Start(cur))?;
-            Ok(end)
+            // `File::metadata()` 底层也是 fstat，同样不动游标
+            Ok(self.file.metadata()?.len())
         }
     }
 
@@ -1150,6 +1159,60 @@ mod tests {
 
         // 长度也真的相同（确认不是「两边都提前 EOF 而恰好相等」）
         assert_eq!(data_fork_len(&a).unwrap(), data_fork_len(&b).unwrap());
+    }
+
+    /// ⚠️⚠️ 回归：`size()` **绝不能改变读位置**。
+    ///
+    /// 这条是 CI 上 macOS 失败的真因：原先 `size()` 用 `lseek(SEEK_END)`，
+    /// 把偏移留在了文件末尾 → 后续续传前缀比对从末尾开始读 → 读到 0 字节 →
+    /// 误判「前缀不一致」→ 合法续传被降级成全量重写。
+    /// 本机 Windows 因为旧实现里存/还了位置而看不出来。
+    #[test]
+    fn t11_size_does_not_move_read_position() {
+        let d = tmpdir("t11");
+        let f = d.join("seek.bin");
+        let content = data(4096, 33);
+        fs::write(&f, &content).unwrap();
+
+        let mut fh = DataFile::open_read(&f).unwrap();
+
+        // 先读掉前 1000 字节
+        let mut head = vec![0u8; 1000];
+        let n = fh.read_full(&mut head).unwrap();
+        assert_eq!(n, 1000);
+        assert_eq!(&head[..], &content[..1000]);
+
+        // 查长度（这一步不许偷偷改位置）
+        let len = fh.size().unwrap();
+        assert_eq!(len, 4096);
+
+        // 再读，必须从第 1001 字节继续 —— 若 size() 用了 lseek(END)，
+        // 这里会直接读到 EOF（n == 0）而失败
+        let mut rest = vec![0u8; 3096];
+        let n2 = fh.read_full(&mut rest).unwrap();
+        assert_eq!(n2, 3096, "size() 之后必须还能从原位置继续读（说明 size 没动游标）");
+        assert_eq!(&rest[..], &content[1000..], "读到的必须正好是剩余部分");
+    }
+
+    /// 同一条约束的端到端版本：`size()` 之后紧接着做前缀比对必须仍然正确
+    #[test]
+    fn t12_prefix_match_after_size_call() {
+        let d = tmpdir("t12");
+        let src = d.join("s.bin");
+        let dst = d.join("d.bin");
+        let content = data(2 * 1024 * 1024 + 123, 44);
+        fs::write(&src, &content).unwrap();
+        fs::write(&dst, &content[..700_000]).unwrap();
+
+        let mut a = DataFile::open_read(&src).unwrap();
+        let mut b = DataFile::open_read(&dst).unwrap();
+        // 关键顺序：先查长度（旧实现会在这里把游标推到末尾）
+        assert_eq!(a.size().unwrap(), content.len() as u64);
+        assert_eq!(b.size().unwrap(), 700_000);
+
+        let cancel = AtomicBool::new(false);
+        let same = prefix_matches(&mut a, &mut b, 700_000, &cancel).unwrap();
+        assert!(same, "查过长度之后，前缀比对必须仍判为一致");
     }
 
     /// 测试 xattr 清理接口在无隔离属性时是「正常返回 false」而不是报错
