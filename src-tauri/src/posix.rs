@@ -170,6 +170,33 @@ impl DataFile {
         }
     }
 
+    /// 读**满** `buf`（或读到 EOF 为止），返回实际读到的字节数。
+    ///
+    /// ⚠️ 与 [`read_some`](Self::read_some) 的区别是**关键**，别混用：
+    ///
+    /// `read(2)` **不保证**把请求的字节数一次读完 —— 返回小于 `buf.len()` 是合法的。
+    /// 本机 Windows/NTFS 上实测几乎总是读满，所以这个差异在本机看不出来；
+    /// 但 **macOS/APFS 会返回部分读**（CI 上就是这么炸的：
+    /// 「本该正常续传却判定要重写」，根因是两边一次读到的字节数不同 →
+    /// 被当成「内容不一致」）。
+    ///
+    /// 因此：
+    /// - **流式**场景（拷贝、整文件哈希）：读多少算多少，用 `read_some` —— 反正
+    ///   字节是按顺序累加的，块大小不影响最终的字节序列。
+    /// - **按偏移对齐比较**的场景（前缀比对、分片比对）：**必须**用 `read_full`，
+    ///   否则两边读到的边界不一致，会把「同样的内容」误判成「不同」。
+    pub fn read_full(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            let n = self.read_some(&mut buf[filled..])?;
+            if n == 0 {
+                break; // EOF
+            }
+            filled += n;
+        }
+        Ok(filled)
+    }
+
     // ---------------------------------------------------------- 写
 
     /// 把 `buf` **全部**写出去（短写自动补齐、EINTR 自动重试）。
@@ -446,8 +473,11 @@ fn prefix_matches(
             return Err(cancelled_err());
         }
         let want = remaining.min(CHUNK_SIZE as u64) as usize;
-        let na = a.read_some(&mut ba[..want])?;
-        let nb = b.read_some(&mut bb[..want])?;
+        // ⚠️ 必须 read_full：两边要**按同一偏移**对齐比较，
+        // 用 read_some 的话一旦两边读到的字节数不同（macOS/APFS 会），
+        // 就会把「内容相同」误判成「不同」→ 无谓地整份重写（CI 上实测踩过）。
+        let na = a.read_full(&mut ba[..want])?;
+        let nb = b.read_full(&mut bb[..want])?;
         // 任何一边提前 EOF：说明长度不足，前缀不可能相同
         if na != nb || na == 0 {
             return Ok(false);
@@ -586,8 +616,9 @@ pub fn diff_chunks(
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled_err());
         }
-        let na = fa.read_some(&mut ba)?;
-        let nb = fb.read_some(&mut bb)?;
+        // 同 prefix_matches：分片比对要求两边按同一偏移对齐，必须读满
+        let na = fa.read_full(&mut ba)?;
+        let nb = fb.read_full(&mut bb)?;
         if na == 0 && nb == 0 {
             break;
         }
@@ -1051,6 +1082,74 @@ mod tests {
         assert_eq!(diff.first_bad, None);
         assert!(diff.bad.is_empty());
         assert_eq!(diff.total_chunks, 10, "10000 字节 / 1024 = 10 片");
+    }
+
+    /// `read_full` 的契约：读满 buf，或读到 EOF 为止（两种情形都要对）
+    #[test]
+    fn t09_read_full_fills_or_stops_at_eof() {
+        let d = tmpdir("t09");
+        let f = d.join("small.bin");
+        let content = data(1000, 5);
+        fs::write(&f, &content).unwrap();
+
+        let mut fh = DataFile::open_read(&f).unwrap();
+
+        // 情形 A：buf 比文件大 → 停在 EOF，返回真实长度
+        let mut big = vec![0u8; 4096];
+        let n = fh.read_full(&mut big).unwrap();
+        assert_eq!(n, 1000, "buf 大于文件时应返回文件实际长度");
+        assert_eq!(&big[..n], &content[..]);
+
+        // 情形 B：buf 比文件小、需要多次 read 才能读满 → 循环拼起来必须等于原文
+        let mut fh = DataFile::open_read(&f).unwrap();
+        let mut acc: Vec<u8> = Vec::new();
+        let mut buf = vec![0u8; 64];
+        loop {
+            let n = fh.read_full(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            // 除最后一块外，每块都必须是「满」的 —— 这就是 read_full 与 read_some 的差别
+            acc.extend_from_slice(&buf[..n]);
+            if n < buf.len() {
+                break;
+            }
+        }
+        assert_eq!(acc, content, "分块读满再拼接必须逐字节等于原文");
+    }
+
+    /// ⚠️ 关键回归：**两边写入方式不同**（一次写完 vs 分多次追加）时，
+    /// 前缀比对仍必须判为「一致」。
+    ///
+    /// 这条直接对应 CI 上的失败：`read(2)` 返回的粒度会受底层影响，
+    /// 若比对时用 `read_some`（不保证读满），两边读到的边界不同就会误判为不一致。
+    /// 用 `read_full` 后，无论底层一次读多少，两边都按同一偏移对齐。
+    #[test]
+    fn t10_prefix_match_survives_different_write_patterns() {
+        let d = tmpdir("t10");
+        let a = d.join("one_shot.bin");
+        let b = d.join("appended.bin");
+        let content = data(3 * 1024 * 1024 + 777, 17);
+
+        // a：一次性写完
+        fs::write(&a, &content).unwrap();
+        // b：分多次追加写（内容相同，但写入路径不同 → 底层布局/读粒度可能不同）
+        {
+            let mut f = DataFile::open_write(&b, WriteMode::Truncate).unwrap();
+            for chunk in content.chunks(200_000) {
+                f.write_all(chunk).unwrap();
+            }
+            f.sync().unwrap();
+        }
+
+        let mut fa = DataFile::open_read(&a).unwrap();
+        let mut fb = DataFile::open_read(&b).unwrap();
+        let cancel = AtomicBool::new(false);
+        let same = prefix_matches(&mut fa, &mut fb, content.len() as u64, &cancel).unwrap();
+        assert!(same, "内容相同 → 前缀比对必须判为一致（不能因读粒度差异误判）");
+
+        // 长度也真的相同（确认不是「两边都提前 EOF 而恰好相等」）
+        assert_eq!(data_fork_len(&a).unwrap(), data_fork_len(&b).unwrap());
     }
 
     /// 测试 xattr 清理接口在无隔离属性时是「正常返回 false」而不是报错
