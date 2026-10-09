@@ -647,8 +647,10 @@ export function showConfirm(opts, cb) {
 
 /**
  * 「跳过校验」选择弹窗（校验阶段点「跳过」按钮时弹出）：
- * 用户可跳过分**单个文件**，或跳过**当前文件所在目录及其子目录**里的全部剩余文件。
- * @param {{file:string, folder:string}} opts file=当前文件路径；folder=其所在目录
+ * 用户可跳过**单个文件**，或跳过**当前文件所在目录及其子目录**里的全部剩余文件。
+ * 无论何时点击都会弹出（不再可能静默跳过单文件）；拿不到「当前文件」路径时
+ * （校验刚开始、还没收到第一条进度）「跳过整个文件夹」按钮置灰，避免误跳。
+ * @param {{file:string, folder:string, folderName:string, hasCur:boolean}} opts
  * @param {("file"|"folder"|null)=>void} cb 选「跳过此文件」传 "file"，
  *   选「跳过整个文件夹」传 "folder"，取消 / 点蒙层外部传 null
  */
@@ -659,7 +661,15 @@ export function showSkipChoice(opts, cb) {
     `<div class="skip-folder"><span class="skip-folder-label">整个文件夹</span>` +
     `<code class="skip-folder-path">${esc(opts.folder)}</code></div>` +
     `<p class="skip-hint">选「跳过整个文件夹」会跳过该目录及其子目录下<em>全部剩余</em>文件（持续生效，直到本轮校验结束）。</p>`;
-  $("skipFolderBtn").textContent = `跳过整个文件夹（${opts.folderName || "当前目录"}）`;
+  const fb = $("skipFolderBtn");
+  fb.textContent = `跳过整个文件夹（${opts.folderName || "当前目录"}）`;
+  if (!opts.hasCur) {
+    fb.disabled = true;
+    fb.title = "暂未收到校验进度，无法确定当前文件所在目录，稍后再试";
+  } else {
+    fb.disabled = false;
+    fb.title = "";
+  }
   openModal("skipModal", (reply) => cb(reply === "cancel" ? null : reply));
 }
 

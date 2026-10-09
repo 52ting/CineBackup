@@ -1337,61 +1337,48 @@ $("btnCancel").addEventListener("click", cancel);
 
 // 「跳过校验」：只在校验阶段可见（renderStatus 控制显隐）。
 // 与「取消任务」完全不同 —— 只放弃当前这一个文件（或整个文件夹）的校验，任务继续跑完。
-// 点击后弹选择：跳过单个文件，还是跳过当前文件所在目录（含子目录）的全部剩余文件。
+// 点击后**一定**弹选择框：跳过单个文件，还是跳过当前文件所在目录（含子目录）的全部剩余文件。
 $("btnSkipFile").addEventListener("click", async () => {
   const cur = state.verifyCurrent;
-  // 拿不到「当前文件」路径（校验刚开始、还没收到第一条进度）→ 退回单文件跳过
-  if (!cur) {
-    try {
-      const accepted = await skipCurrentVerify();
-      if (accepted) {
-        ui.pushLog(
-          "warn",
-          "已请求跳过当前文件的校验 —— 会立刻停手并记入结果表「跳过」栏（不计入失败），然后继续下一个文件。"
-        );
-      } else {
-        ui.pushLog("info", "当前不在校验阶段，无需跳过。");
-      }
-    } catch (e) {
-      ui.pushLog("error", `跳过当前文件失败：${e}`);
-    }
-    return;
-  }
-
-  // 父目录 = 去掉最后一个路径段（兼容 / 与 \）；拿不到时回退整个路径
-  const folder = cur.replace(/[\\/]+[^\\/]*$/, "") || cur;
-  const folderName = folder.split(/[\\/]/).filter(Boolean).pop() || folder;
-  ui.showSkipChoice({ file: cur, folder, folderName }, async (choice) => {
-    if (choice === "file") {
-      try {
-        const accepted = await skipCurrentVerify();
-        if (accepted) {
-          ui.pushLog(
-            "warn",
-            `已请求跳过当前文件的校验：${cur} —— 记入结果表「跳过」栏（不计入失败），继续下一个文件。`
-          );
-        } else {
-          ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+  // 父目录 = 去掉最后一个路径段（兼容 / 与 \）；拿不到时为空
+  const folder = cur ? cur.replace(/[\\/]+[^\\/]*$/, "") || cur : "";
+  const folderName = folder ? folder.split(/[\\/]/).filter(Boolean).pop() || folder : "";
+  ui.showSkipChoice(
+    { file: cur || "（暂无当前文件路径）", folder: folder || "（未知）", folderName, hasCur: !!cur },
+    async (choice) => {
+      if (choice === "file") {
+        try {
+          const accepted = await skipCurrentVerify();
+          if (accepted) {
+            ui.pushLog(
+              "warn",
+              cur
+                ? `已请求跳过当前文件的校验：${cur} —— 记入结果表「跳过」栏（不计入失败），继续下一个文件。`
+                : "已请求跳过当前文件的校验 —— 记入结果表「跳过」栏（不计入失败），继续下一个文件。"
+            );
+          } else {
+            ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+          }
+        } catch (e) {
+          ui.pushLog("error", `跳过当前文件失败：${e}`);
         }
-      } catch (e) {
-        ui.pushLog("error", `跳过当前文件失败：${e}`);
-      }
-    } else if (choice === "folder") {
-      try {
-        const accepted = await skipFolderVerify(folder);
-        if (accepted) {
-          ui.pushLog(
-            "warn",
-            `已请求跳过整个文件夹「${folderName}」的校验 —— 该目录及其子目录下全部剩余文件都会记入结果表「跳过」栏（不计入失败），持续到本轮校验结束。`
-          );
-        } else {
-          ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+      } else if (choice === "folder") {
+        try {
+          const accepted = await skipFolderVerify(folder);
+          if (accepted) {
+            ui.pushLog(
+              "warn",
+              `已请求跳过整个文件夹「${folderName}」的校验 —— 该目录及其子目录下全部剩余文件都会记入结果表「跳过」栏（不计入失败），持续到本轮校验结束。`
+            );
+          } else {
+            ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+          }
+        } catch (e) {
+          ui.pushLog("error", `跳过整个文件夹失败：${e}`);
         }
-      } catch (e) {
-        ui.pushLog("error", `跳过整个文件夹失败：${e}`);
       }
     }
-  });
+  );
 });
 $("btnClearResults").addEventListener("click", () => {
   ui.resetResults();
