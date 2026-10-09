@@ -645,6 +645,24 @@ export function showConfirm(opts, cb) {
   openModal("confirmModal", (reply) => cb(reply === "ok"));
 }
 
+/**
+ * 「跳过校验」选择弹窗（校验阶段点「跳过」按钮时弹出）：
+ * 用户可跳过分**单个文件**，或跳过**当前文件所在目录及其子目录**里的全部剩余文件。
+ * @param {{file:string, folder:string}} opts file=当前文件路径；folder=其所在目录
+ * @param {("file"|"folder"|null)=>void} cb 选「跳过此文件」传 "file"，
+ *   选「跳过整个文件夹」传 "folder"，取消 / 点蒙层外部传 null
+ */
+export function showSkipChoice(opts, cb) {
+  $("skipBody").innerHTML =
+    `<div class="skip-file"><span class="skip-file-label">当前文件</span>` +
+    `<code class="skip-file-path">${esc(opts.file)}</code></div>` +
+    `<div class="skip-folder"><span class="skip-folder-label">整个文件夹</span>` +
+    `<code class="skip-folder-path">${esc(opts.folder)}</code></div>` +
+    `<p class="skip-hint">选「跳过整个文件夹」会跳过该目录及其子目录下<em>全部剩余</em>文件（持续生效，直到本轮校验结束）。</p>`;
+  $("skipFolderBtn").textContent = `跳过整个文件夹（${opts.folderName || "当前目录"}）`;
+  openModal("skipModal", (reply) => cb(reply === "cancel" ? null : reply));
+}
+
 /** 关闭当前打开的弹窗（不回调），供倒计时自动关闭使用 */
 function closeModal() {
   if (activeHandler) {
@@ -678,7 +696,9 @@ function openModal(id, onReply) {
 
 /** 任务结束时强制关掉所有弹窗（例如弹窗还开着用户点了「取消任务」） */
 export function hideModals() {
-  ["conflictModal", "errorModal", "confirmModal"].forEach((id) => $(id).classList.add("hidden"));
+  ["conflictModal", "errorModal", "confirmModal", "skipModal"].forEach((id) =>
+    $(id).classList.add("hidden")
+  );
   if (activeHandler) {
     activeHandler.mask.removeEventListener("click", activeHandler.fn);
     activeHandler = null;

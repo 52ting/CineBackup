@@ -18,7 +18,9 @@
 //! 进度条不动」。两条约定各有回归测试，见 `tests/verify_progress.rs`。
 
 use std::io;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use tauri::AppHandle;
@@ -93,6 +95,7 @@ pub fn run_verify(
     algo: HashAlgo,
     cancel: &AtomicBool,
     skip: &AtomicBool,
+    skip_folder: &Mutex<Option<PathBuf>>,
     total_bytes: u64,
     debug_chunk: bool,
 ) -> VerifyStats {
@@ -105,6 +108,7 @@ pub fn run_verify(
         algo,
         cancel,
         skip,
+        skip_folder,
         total_bytes,
         PROGRESS_MS,
         debug_chunk,
@@ -131,23 +135,28 @@ pub fn run_verify_with(
     // 保持旧签名不变（`tests/verify_progress.rs` 依赖它）：分片调试默认关，
     // 并给一个永远不会被置位的「跳过」标志（这些测试不涉及手动跳过）。
     let never = AtomicBool::new(false);
+    let never_folder = Mutex::new(None);
     run_verify_with_opts(
-        items, idx, algo, cancel, &never, total_bytes, progress_ms, false, sinks,
+        items, idx, algo, cancel, &never, &never_folder, total_bytes, progress_ms, false, sinks,
     )
 }
 
-/// 校验主体（带分片调试 + 单文件跳过）。
+/// 校验主体（带分片调试 + 单文件跳过 + 整个文件夹跳过）。
 ///
 /// - `debug_chunk = true`：对不一致的文件额外按 [`DEBUG_CHUNK_SIZE`] 分片重算两边摘要，
 ///   指出**首个不一致的分片与偏移**。
 /// - `skip`：用户点「跳过此文件」时被置位。**文件开头与每个读取块**都会检查它，
 ///   命中即放弃该文件（记 `status = "skip"`，**不计入失败**）并继续下一个。
+/// - `skip_folder`：用户选「跳过整个文件夹」时写入目标目录。**每个文件开头**都会检查：
+///   源路径属于该目录（含子目录）的，一律直接跳过（记 `status = "skip"`），
+///   直到校验阶段结束。持续生效，不需要像 `skip` 那样取走消费。
 pub fn run_verify_with_opts(
     items: &[PlanItem],
     idx: &[usize],
     algo: HashAlgo,
     cancel: &AtomicBool,
     skip: &AtomicBool,
+    skip_folder: &Mutex<Option<PathBuf>>,
     total_bytes: u64,
     progress_ms: u64,
     debug_chunk: bool,
@@ -211,6 +220,35 @@ pub fn run_verify_with_opts(
                 started,
             ));
             continue;
+        }
+
+        // ── 用户选了「跳过整个文件夹」── 当前文件属于该目录（含子目录）→ 直接跳过。
+        //    与上面的单文件跳过互不冲突：文件夹跳过是**持续**生效的（不取走消费），
+        //    直到校验阶段结束，期间该前缀下的所有剩余文件都会命中这里。
+        let skip_folder = skip_folder.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(folder) = &skip_folder {
+            if src.starts_with(folder) {
+                stats.skipped += 1;
+                let r = skip_result(src, dst, it.size, 0);
+                log(
+                    "warn",
+                    format!("{}（整个文件夹 {}）{}", r.message, folder.display(), r.path),
+                );
+                result_sink(&r);
+                throttle.force();
+                progress_sink(&make_report(
+                    &mut meter,
+                    files_total,
+                    (i + 1) as u64,
+                    total_bytes,
+                    done_bytes,
+                    &cur,
+                    0,
+                    file_total,
+                    started,
+                ));
+                continue;
+            }
         }
 
         let mut file_read: u64 = 0;

@@ -117,6 +117,18 @@ pub fn skip_current_verify(state: State<'_, AppState>) -> bool {
     state.inner().request_skip_current()
 }
 
+/// 跳过「当前文件所在目录及其子目录」里的全部剩余文件（校验阶段专用）。
+///
+/// 与 [`skip_current_verify`] 的区别：那是**一次性**跳过当前这一个文件，
+/// 这个是**持续**跳过整个文件夹 —— 设置后该目录前缀下的所有未校验文件
+/// （含子目录里的）都会在结果表里记 `status = skip` 并跳过，直到校验阶段结束。
+///
+/// 返回 `false` 表示当前不在校验阶段（拷贝中 / 空闲）或目录为空，请求未被受理。
+#[tauri::command]
+pub fn skip_folder_verify(folder: String, state: State<'_, AppState>) -> bool {
+    state.inner().request_skip_folder(folder)
+}
+
 /// 启动**对比校验**（只读：同时看左右两边，回答是否一致）。
 ///
 /// 立即返回，实际工作在后台线程；进度与结果通过

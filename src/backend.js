@@ -36,6 +36,7 @@ export const CMD = {
   LOAD_TASK: "load_task_file",
   IS_BUSY: "is_busy",
   SKIP_CURRENT_VERIFY: "skip_current_verify",
+  SKIP_FOLDER_VERIFY: "skip_folder_verify",
   START_COMPARE: "start_compare",
   CANCEL_COMPARE: "cancel_compare",
   CLOSE_APP: "close_app",
@@ -111,6 +112,20 @@ export function isBusy() {
  */
 export function skipCurrentVerify() {
   return invoke(CMD.SKIP_CURRENT_VERIFY);
+}
+
+/**
+ * 跳过「当前文件所在目录及其子目录」里的全部剩余文件（校验阶段专用）。
+ *
+ * 与 [`skipCurrentVerify`] 的区别：那是**一次性**跳过当前这一个文件，
+ * 这个是**持续**跳过整个文件夹 —— 后端按传入的目录做路径前缀匹配，
+ * 该目录下的所有未校验文件都会记「跳过」并继续，直到校验阶段结束。
+ *
+ * @param {string} folder 要跳过的文件夹路径（从当前校验文件的父目录取）
+ * @returns {Promise<boolean>} false = 当前不在校验阶段或目录为空，请求未被受理
+ */
+export function skipFolderVerify(folder) {
+  return invoke(CMD.SKIP_FOLDER_VERIFY, { folder });
 }
 
 /**

@@ -275,6 +275,19 @@
       </div>
     </div>
 
+    <!-- ========== 跳过校验选择模态框（校验阶段点「跳过」：单文件 or 整个文件夹） ========== -->
+    <div class="modal-mask hidden" id="skipModal">
+      <div class="modal">
+        <h3>跳过校验</h3>
+        <div class="modal-detail" id="skipBody"></div>
+        <div class="modal-actions">
+          <button class="btn" data-reply="cancel">取消</button>
+          <button class="btn" data-reply="file" id="skipFileBtn">跳过此文件</button>
+          <button class="btn danger" data-reply="folder" id="skipFolderBtn">跳过整个文件夹</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ========== 对比校验面板（独立于备份任务，只读） ========== -->
     <div class="modal-mask hidden" id="compareModal">
       <div class="modal modal-wide">

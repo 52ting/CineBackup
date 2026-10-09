@@ -51,6 +51,7 @@ pub fn run() {
             commands::cancel_job,
             commands::is_busy,
             commands::skip_current_verify,
+            commands::skip_folder_verify,
             commands::start_compare,
             commands::cancel_compare,
             commands::save_task_file,

@@ -8,7 +8,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   EV, probePath, fsType, freeSpace, listDisks, startJob, replyDecision,
   cancelJob, saveTaskFile, loadTaskFile, on, fmtBytes, appVersion,
-  startCompare, cancelCompare, skipCurrentVerify, closeApp,
+  startCompare, cancelCompare, skipCurrentVerify, skipFolderVerify, closeApp,
 } from "./backend.js";
 import * as ui from "./ui.js";
 import { initDragDrop } from "./dnd.js";
@@ -43,6 +43,9 @@ const state = {
    * 显示「预扫描中…」还是「排队中」，免得大目录扫描期间整列假死。
    */
   phase: "idle",
+  /** 校验阶段「当前正在校验的文件」路径（来自 `cb:progress` 的 current_file）；
+   *  点「跳过整个文件夹」时取其父目录作为要跳过的目录 */
+  verifyCurrent: "",
   /** 运行中每个源的进度行（来自后端 progress 事件） */
   runRows: [],
   /** 本轮是 `"full"` 还是 `"append"`，用于日志措辞与结果表累积语义 */
@@ -1028,6 +1031,11 @@ function subscribe() {
   on(EV.PROGRESS, (p) => {
     state.phase = p.phase === "verify" ? "verify" : "copy";
     ui.renderProgress({ ...p, phase: p.phase === "verify" ? "verify" : "copy" });
+    // 记录「当前正在校验的文件」——校验阶段点「跳过整个文件夹」需要它（取父目录）。
+    // 只有 verify 阶段的 current_file 才有意义；拷贝阶段不覆盖这个字段。
+    if (p.phase === "verify" && p.current_file) {
+      state.verifyCurrent = p.current_file;
+    }
     // 后端只在拷贝阶段带按源数据；校验阶段沿用上一批行，只让总进度继续动。
     // 追加轮后端只带新源 → 用合并而不是替换，免得上一轮已完成的行消失。
     if (Array.isArray(p.sources) && p.sources.length) {
@@ -1327,22 +1335,63 @@ $("btnStart").addEventListener("click", () => {
 $("btnClearTask").addEventListener("click", clearTask);
 $("btnCancel").addEventListener("click", cancel);
 
-// 「跳过此文件」：只在校验阶段可见（renderStatus 控制显隐）。
-// 与「取消任务」完全不同 —— 只放弃当前这一个文件的校验，任务继续跑完。
+// 「跳过校验」：只在校验阶段可见（renderStatus 控制显隐）。
+// 与「取消任务」完全不同 —— 只放弃当前这一个文件（或整个文件夹）的校验，任务继续跑完。
+// 点击后弹选择：跳过单个文件，还是跳过当前文件所在目录（含子目录）的全部剩余文件。
 $("btnSkipFile").addEventListener("click", async () => {
-  try {
-    const accepted = await skipCurrentVerify();
-    if (accepted) {
-      ui.pushLog(
-        "warn",
-        "已请求跳过当前文件的校验 —— 会立刻停手并记入结果表「跳过」栏（不计入失败），然后继续下一个文件。"
-      );
-    } else {
-      ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+  const cur = state.verifyCurrent;
+  // 拿不到「当前文件」路径（校验刚开始、还没收到第一条进度）→ 退回单文件跳过
+  if (!cur) {
+    try {
+      const accepted = await skipCurrentVerify();
+      if (accepted) {
+        ui.pushLog(
+          "warn",
+          "已请求跳过当前文件的校验 —— 会立刻停手并记入结果表「跳过」栏（不计入失败），然后继续下一个文件。"
+        );
+      } else {
+        ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+      }
+    } catch (e) {
+      ui.pushLog("error", `跳过当前文件失败：${e}`);
     }
-  } catch (e) {
-    ui.pushLog("error", `跳过当前文件失败：${e}`);
+    return;
   }
+
+  // 父目录 = 去掉最后一个路径段（兼容 / 与 \）；拿不到时回退整个路径
+  const folder = cur.replace(/[\\/]+[^\\/]*$/, "") || cur;
+  const folderName = folder.split(/[\\/]/).filter(Boolean).pop() || folder;
+  ui.showSkipChoice({ file: cur, folder, folderName }, async (choice) => {
+    if (choice === "file") {
+      try {
+        const accepted = await skipCurrentVerify();
+        if (accepted) {
+          ui.pushLog(
+            "warn",
+            `已请求跳过当前文件的校验：${cur} —— 记入结果表「跳过」栏（不计入失败），继续下一个文件。`
+          );
+        } else {
+          ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+        }
+      } catch (e) {
+        ui.pushLog("error", `跳过当前文件失败：${e}`);
+      }
+    } else if (choice === "folder") {
+      try {
+        const accepted = await skipFolderVerify(folder);
+        if (accepted) {
+          ui.pushLog(
+            "warn",
+            `已请求跳过整个文件夹「${folderName}」的校验 —— 该目录及其子目录下全部剩余文件都会记入结果表「跳过」栏（不计入失败），持续到本轮校验结束。`
+          );
+        } else {
+          ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+        }
+      } catch (e) {
+        ui.pushLog("error", `跳过整个文件夹失败：${e}`);
+      }
+    }
+  });
 });
 $("btnClearResults").addEventListener("click", () => {
   ui.resetResults();

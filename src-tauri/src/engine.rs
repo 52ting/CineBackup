@@ -370,6 +370,7 @@ fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, St
                 req.options.hash_algo,
                 &st.cancel,
                 &st.verify_skip,
+                &st.verify_skip_folder,
                 total,
                 req.options.debug_chunk_hash,
             );
