@@ -38,6 +38,12 @@ pub struct VerifyStats {
     pub bytes: u64,
 }
 
+/// 分片调试时用的分片大小。
+///
+/// 64 MiB 是个折中：太小 → 一个 400 GB 的文件会有几千片，扫一遍很久；
+/// 太大 → 「第 137 片不同」换算出的偏移不够精确，指不回「上次中断在哪」。
+const DEBUG_CHUNK_SIZE: u64 = 64 * 1024 * 1024;
+
 /// 校验阶段的三个输出口（日志 / 结果表 / 进度）。
 ///
 /// 抽成参数是为了让单测能接管它们：`tests/verify_progress.rs` 靠它数
@@ -63,17 +69,19 @@ pub fn run_verify(
     algo: HashAlgo,
     cancel: &AtomicBool,
     total_bytes: u64,
+    debug_chunk: bool,
 ) -> VerifyStats {
     let mut log = |level: &str, msg: String| events::emit_log(app, level, msg);
     let mut result = |r: &FileResult| events::emit_file_result(app, r);
     let mut progress = |p: &ProgressReport| events::emit_progress(app, p);
-    run_verify_with(
+    run_verify_with_opts(
         items,
         idx,
         algo,
         cancel,
         total_bytes,
         PROGRESS_MS,
+        debug_chunk,
         VerifySinks {
             log: &mut log,
             result: &mut result,
@@ -92,6 +100,22 @@ pub fn run_verify_with(
     cancel: &AtomicBool,
     total_bytes: u64,
     progress_ms: u64,
+    sinks: VerifySinks<'_>,
+) -> VerifyStats {
+    // 保持旧签名不变（`tests/verify_progress.rs` 依赖它），分片调试默认关
+    run_verify_with_opts(items, idx, algo, cancel, total_bytes, progress_ms, false, sinks)
+}
+
+/// 校验主体（带分片调试开关）。`debug_chunk = true` 时，对不一致的文件
+/// 额外按 [`DEBUG_CHUNK_SIZE`] 分片重算两边摘要，指出**首个不一致的分片与偏移**。
+pub fn run_verify_with_opts(
+    items: &[PlanItem],
+    idx: &[usize],
+    algo: HashAlgo,
+    cancel: &AtomicBool,
+    total_bytes: u64,
+    progress_ms: u64,
+    debug_chunk: bool,
     sinks: VerifySinks<'_>,
 ) -> VerifyStats {
     let VerifySinks {
@@ -175,6 +199,77 @@ pub fn run_verify_with(
                     }
                 } else {
                     stats.failed += 1;
+                    let mut msg = format!(
+                        "{} 不一致（源 {} / 目标 {}，字节 {} vs {}）",
+                        algo.label(),
+                        a.short(8),
+                        b.short(8),
+                        na,
+                        nb
+                    );
+                    // ---- 分片调试定位（可选）----
+                    // 只看「整体不一致」没法判成因：是整份文件都不对（没真拷）？
+                    // 还是前面对、从某个偏移开始错（续传拼接 / 中途写坏）？
+                    // 分片摘要能直接给出「第几片开始不同」，乘上片大小就是首个坏字节偏移。
+                    if debug_chunk {
+                        match crate::posix::diff_chunks(
+                            src,
+                            dst,
+                            DEBUG_CHUNK_SIZE,
+                            algo,
+                            cancel,
+                            8,
+                        ) {
+                            Ok(d) => match d.first_bad {
+                                Some(bi) => {
+                                    let off = bi * d.chunk_size;
+                                    let pct = if it.size > 0 {
+                                        off as f64 / it.size as f64 * 100.0
+                                    } else {
+                                        0.0
+                                    };
+                                    msg.push_str(&format!(
+                                        "；首个不一致分片 #{}（偏移 {}，占全文 {:.2}%，片大小 {}）",
+                                        bi,
+                                        human_bytes(off),
+                                        pct,
+                                        human_bytes(d.chunk_size)
+                                    ));
+                                    if d.bad.len() > 1 {
+                                        msg.push_str(&format!("，共扫描到 {} 片不一致", d.bad.len()));
+                                    }
+                                    log(
+                                        "error",
+                                        format!(
+                                            "分片定位：{} 第 {} 片起不同（源码 {} / 目标码 {}）",
+                                            path_to_string(src),
+                                            bi,
+                                            d.bad.first().map(|c| c.hex.as_str()).unwrap_or("-"),
+                                            d.bad_dst.first().map(|c| c.hex.as_str()).unwrap_or("-")
+                                        ),
+                                    );
+                                    if bi == 0 {
+                                        log(
+                                            "warn",
+                                            "首个分片就不同 → 目标那份很可能不是本次拷贝的产物（旧的同名文件 / 未真正写入）".to_string(),
+                                        );
+                                    } else {
+                                        log(
+                                            "warn",
+                                            format!(
+                                                "前 {} 片一致、从第 {} 片起不同 → 典型的「追加式损坏」或写入中途失效；偏移 {} 值得与上次中断时的文件长度对照",
+                                                bi,
+                                                bi,
+                                                human_bytes(off)
+                                            ),
+                                        );
+                                    }
+                                }
+                                None => msg.push_str("；分片复扫未发现差异（可能读取不稳定，建议重复读两遍比对）"),
+                            },
+                            Err(e) => msg.push_str(&format!("；分片调试失败：{e}")),
+                        }
+                    }
                     FileResult {
                         path: path_to_string(src),
                         target: path_to_string(dst),
@@ -182,14 +277,7 @@ pub fn run_verify_with(
                         status: "fail".into(),
                         src_hash: a.hex().to_string(),
                         dst_hash: b.hex().to_string(),
-                        message: format!(
-                            "{} 不一致（源 {} / 目标 {}，字节 {} vs {}）",
-                            algo.label(),
-                            a.short(8),
-                            b.short(8),
-                            na,
-                            nb
-                        ),
+                        message: msg,
                     }
                 }
             }

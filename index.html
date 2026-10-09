@@ -128,6 +128,15 @@
                 <input type="checkbox" id="optSkipVerify" />
                 <span>跳过校验（只拷贝，不做内容哈希校验）</span>
               </label>
+              <div class="opt-title">元数据 / 排障</div>
+              <label class="chk">
+                <input type="checkbox" id="optCopyMeta" />
+                <span>复制元数据（权限 / 时间戳 / 扩展属性）。<b>默认关闭</b>；资源分支永不复制，哈希只算文件正文（Data Fork）</span>
+              </label>
+              <label class="chk">
+                <input type="checkbox" id="optDebugChunk" />
+                <span>校验失败时做分片定位（指出首个不一致的分片与偏移，用于排障；会额外读一遍出错的文件）</span>
+              </label>
             </div>
           </div>
         </div>

@@ -10,6 +10,7 @@
 //! - `engine`   任务调度：串行串起 扫描 → 拷贝 → 校验，后台线程执行
 //! - `verify`   拷贝完成后的全量哈希校验阶段（默认 SHA-256）
 //! - `compare`  独立的对比校验（两边文件/文件夹是否一致，只读）
+//! - `posix`    唯一的 Data Fork 读写入入口（拷贝与哈希共用，见模块注释里的三条铁律）
 //! - `task`     JSON 任务保存 / 加载
 //! - `commands` Tauri 命令入口
 
@@ -22,6 +23,7 @@ pub mod events;
 pub mod fsinfo;
 pub mod hash;
 pub mod namecheck;
+pub mod posix;
 pub mod scan;
 pub mod state;
 pub mod task;

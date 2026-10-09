@@ -739,6 +739,10 @@ function collectOptions() {
     skipCopy: $("optSkipCopy").checked,
     // 跳过校验：只拷贝，不做内容哈希校验
     skipVerify: $("optSkipVerify").checked,
+    // 复制源文件的元数据（权限/时间戳/xattr）；资源分支永不复制
+    copyMetadata: $("optCopyMeta").checked,
+    // 校验失败时做分片哈希定位（排障用）
+    debugChunkHash: $("optDebugChunk").checked,
     // "sha256"（默认）| "xxh64" —— 预扫描查重 / 续传前缀 / 最终校验都用它
     hashAlgo: $("optAlgo").value,
   };
@@ -1000,6 +1004,8 @@ async function loadTask() {
   if (typeof o.verifyAfterCopy === "boolean") $("optVerify").checked = o.verifyAfterCopy;
   if (typeof o.skipCopy === "boolean") $("optSkipCopy").checked = o.skipCopy;
   if (typeof o.skipVerify === "boolean") $("optSkipVerify").checked = o.skipVerify;
+  if (typeof o.copyMetadata === "boolean") $("optCopyMeta").checked = o.copyMetadata;
+  if (typeof o.debugChunkHash === "boolean") $("optDebugChunk").checked = o.debugChunkHash;
   // 老任务文件没有这个字段 → 保持当前选择（默认就是 SHA-256）
   if (o.hashAlgo === "xxh64" || o.hashAlgo === "sha256") $("optAlgo").value = o.hashAlgo;
   refreshAlgoUi();
@@ -1336,6 +1342,19 @@ $("optSkipCopy").addEventListener("change", () => {
 $("optSkipVerify").addEventListener("change", () => {
   if ($("optSkipVerify").checked) {
     ui.pushLog("info", "已勾选「跳过校验」：本次任务只拷贝，不做内容哈希校验。");
+  }
+});
+$("optCopyMeta").addEventListener("change", () => {
+  ui.pushLog(
+    "info",
+    $("optCopyMeta").checked
+      ? "已勾选「复制元数据」：会额外复制权限 / 时间戳 / 扩展属性（资源分支永不复制，哈希仍只算文件正文）。"
+      : "已取消「复制元数据」：目标只写文件正文，不复制任何元数据。"
+  );
+});
+$("optDebugChunk").addEventListener("change", () => {
+  if ($("optDebugChunk").checked) {
+    ui.pushLog("info", "已勾选「分片定位」：校验失败时会额外指出首个不一致的分片与偏移（会多读一遍出错的文件）。");
   }
 });
 // 换算法 → 结果表头 / 说明文案立刻跟上（真正生效是下一次任务开始时）

@@ -17,17 +17,15 @@
 //! 同一次任务里**所有**比对（预扫描查重、续传前缀、最终校验）都用同一种算法，
 //! 避免出现「两个地方用不同算法」的解释负担。
 
-use std::fs::File;
-use std::hash::Hasher;
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
+use std::hash::Hasher as _; // 匿名引入：Xxh64 的 write/finish 需要它，但不占用 `Hasher` 这个名字
+use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use xxhash_rust::xxh64::Xxh64;
 
-use crate::util::CHUNK_SIZE;
 
 /// xxHash64 种子（固定为 0，源 / 目标必须一致才有可比性）
 pub const SEED: u64 = 0;
@@ -134,6 +132,24 @@ impl Inner {
     }
 }
 
+/// 对外暴露的增量哈希器。
+///
+/// `posix.rs` 做分片哈希时需要「喂一段字节、拿一个摘要」，用它避免把 `Inner`
+/// 的两种算法细节泄漏出去。
+pub(crate) struct Hasher(Inner);
+
+impl Hasher {
+    pub(crate) fn new(algo: HashAlgo) -> Self {
+        Hasher(Inner::new(algo))
+    }
+    pub(crate) fn write(&mut self, bytes: &[u8]) {
+        self.0.write(bytes)
+    }
+    pub(crate) fn finish(self, algo: HashAlgo) -> Digest {
+        self.0.finish(algo)
+    }
+}
+
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -143,10 +159,6 @@ fn to_hex(bytes: &[u8]) -> String {
         s.push(HEX_DIGITS[(b & 0x0f) as usize] as char);
     }
     s
-}
-
-fn cancelled_err() -> io::Error {
-    io::Error::new(ErrorKind::Interrupted, "任务已取消")
 }
 
 // ================================================================ 流式计算
@@ -174,7 +186,12 @@ pub fn hash_prefix(
     hash_range(path, 0, Some(len), algo, cancel, &mut on_bytes)
 }
 
-/// 通用：从 `start` 偏移开始，最多读 `len` 字节（None = 到文件末尾）计算哈希
+/// 通用：从 `start` 偏移开始，最多读 `len` 字节（None = 到文件末尾）计算哈希。
+///
+/// ⚠️ 实现已收敛到 `posix::hash_data_fork_range` —— **与拷贝共用同一套读循环**。
+/// 这样「拷出去的字节」和「算哈希的字节」在语义上不可能分叉（早期两边各写一份
+/// 读循环，是「长度一样、哈希不一样」这类问题的温床）。
+/// 读的始终是 **Data Fork**，资源分支与 xattr 一概不参与。
 pub fn hash_range(
     path: &Path,
     start: u64,
@@ -183,35 +200,7 @@ pub fn hash_range(
     cancel: &AtomicBool,
     on_bytes: &mut dyn FnMut(u64),
 ) -> io::Result<(Digest, u64)> {
-    let mut file = File::open(path)?;
-    if start > 0 {
-        file.seek(SeekFrom::Start(start))?;
-    }
-
-    let mut hasher = Inner::new(algo);
-    let mut buf = vec![0u8; CHUNK_SIZE]; // 4 MiB 常驻，恒定内存
-    let mut remaining = len.unwrap_or(u64::MAX);
-    let mut total: u64 = 0;
-
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(cancelled_err());
-        }
-        let want = remaining.min(buf.len() as u64) as usize;
-        if want == 0 {
-            break;
-        }
-        let n = file.read(&mut buf[..want])?;
-        if n == 0 {
-            break; // EOF
-        }
-        hasher.write(&buf[..n]);
-        total += n as u64;
-        remaining = remaining.saturating_sub(n as u64);
-        on_bytes(n as u64);
-    }
-
-    Ok((hasher.finish(algo), total))
+    crate::posix::hash_data_fork_range(path, start, len, algo, cancel, on_bytes)
 }
 
 /// 判断两个文件内容是否一致（先比大小短路，再比哈希）
@@ -265,6 +254,7 @@ pub fn resume_prefix_ok(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
 
     /// 不走文件系统的小工具：直接对内存字节算摘要

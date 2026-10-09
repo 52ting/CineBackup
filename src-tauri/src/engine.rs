@@ -23,7 +23,6 @@ use crate::events::{
     self, ConflictAsk, CopyErrorAsk, PlanSummary, ProgressReport, ScanProgress, SourceProgress,
 };
 use crate::fsinfo;
-use crate::hash;
 use crate::scan;
 use crate::state::AppState;
 use crate::types::{
@@ -365,6 +364,7 @@ fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, St
                 req.options.hash_algo,
                 &st.cancel,
                 total,
+                req.options.debug_chunk_hash,
             );
             end.pass += vs.pass;
             end.failed += vs.failed + vs.errors;
@@ -607,54 +607,19 @@ fn run_copy_phase(
         }
 
         // ---- 决定拷贝模式 ----
-        let mut mode = match action {
+        let mode = match action {
             PlannedAction::Resume => CopyMode::Resume,
             PlannedAction::Overwrite => CopyMode::Overwrite,
             _ => CopyMode::Fresh,
         };
+        // `base` 仍要可变：posix 报告 restarted 时会把预记的已完成字节退回
         let mut base = if mode == CopyMode::Resume { existing } else { 0 };
 
-        // 续传前的前缀校验：确认目标里已写入的部分和源的前 N 字节完全一致
-        if mode == CopyMode::Resume && opts.resume_prefix_check && existing > 0 {
-            events::emit_log(
-                app,
-                "info",
-                format!(
-                    "续传前校验已写入部分（{}，{}）：{}",
-                    human_bytes(existing),
-                    opts.hash_algo.label(),
-                    path_to_string(&dst)
-                ),
-            );
-            let ok = hash::resume_prefix_ok(&src, &dst, existing, opts.hash_algo, &st.cancel, |_| {});
-            match ok {
-                Ok(true) => {}
-                Ok(false) => {
-                    events::emit_log(
-                        app,
-                        "warn",
-                        format!(
-                            "已写入部分与源不一致（可能上次中断在半块上），改为从头覆盖重写：{}",
-                            path_to_string(&dst)
-                        ),
-                    );
-                    mode = CopyMode::Overwrite;
-                    base = 0;
-                }
-                Err(e) => {
-                    events::emit_log(
-                        app,
-                        "warn",
-                        format!("前缀校验失败（{e}），改为从头覆盖重写：{}", path_to_string(&dst)),
-                    );
-                    mode = CopyMode::Overwrite;
-                    base = 0;
-                }
-            }
-            if st.cancelled() {
-                out.aborted = true;
-                break;
-            }
+        // 续传前缀校验已下沉到 posix::copy_data_fork（与拷贝同一个读循环，
+        // 避免「校验读一套、拷贝读一套」造成语义分叉，也避免重复读两遍前缀）。
+        if st.cancelled() {
+            out.aborted = true;
+            break;
         }
 
         plan.items[i].final_action = Some(action);
@@ -709,7 +674,15 @@ fn run_copy_phase(
                 }
                 !st.cancelled()
             };
-            copy::copy_file(&src, &current_dst, mode, &st.cancel, &mut on_bytes)
+            copy::copy_file_with(
+                &src,
+                &current_dst,
+                mode,
+                base,                       // 快照长度提示（实测不符会被 posix 拒绝并重写）
+                opts.resume_prefix_check,   // 关掉校验 → posix 退化为从头重写，不盲拼
+                &st.cancel,
+                &mut on_bytes,
+            )
         };
 
         // ---- 自动重试：遇 EILSEQ 且目标路径含被拒码位 ----
@@ -754,7 +727,15 @@ fn run_copy_phase(
                     }
                     !st.cancelled()
                 };
-                res = copy::copy_file(&src, &current_dst, mode, &st.cancel, &mut on_bytes_retry);
+                res = copy::copy_file_with(
+                    &src,
+                    &current_dst,
+                    mode,
+                    base,
+                    opts.resume_prefix_check,
+                    &st.cancel,
+                    &mut on_bytes_retry,
+                );
                 if res.is_ok() {
                     retried = true;
                     // 用 sanitized 覆盖 plan，让 verify 找得到
@@ -782,22 +763,73 @@ fn run_copy_phase(
                     );
                 }
                 if o.restarted {
-                    // 本想续传但目标不可续 → 之前记账的 base 需要退回
+                    // 本想续传但实际改为从头重写 → 之前记账的 base 需要退回
                     bytes_done = bytes_done.saturating_sub(base);
                     if let Some(sp) = src_prog.get_mut(si) {
                         sp.bytes_done = sp.bytes_done.saturating_sub(base);
                     }
                     base = 0;
+                    // 区分原因：开着校验说明是「前缀真的对不上」（多半是旧版本残留）；
+                    // 关着校验说明是我们主动保守重写。两种都不再拼出坏文件。
                     events::emit_log(
                         app,
                         "warn",
+                        if o.prefix_checked {
+                            format!(
+                                "目标已存在部分与源不一致（可能是旧版本残留），已改为从头完整重写：{}",
+                                path_to_string(&dst)
+                            )
+                        } else {
+                            format!(
+                                "续传前校验未开启 → 为避免拼接出错误内容，已改为从头完整重写：{}",
+                                path_to_string(&dst)
+                            )
+                        },
+                    );
+                } else if o.prefix_checked && o.base > 0 {
+                    events::emit_log(
+                        app,
+                        "info",
                         format!(
-                            "目标文件不可续传（大小异常），已完整重写：{}",
-                            path_to_string(&dst)
+                            "续传：已校验前缀 {} 一致，从该位置继续写入。",
+                            human_bytes(o.base)
                         ),
                     );
                 }
                 out.written_bytes = out.written_bytes.saturating_add(o.written);
+
+                // ---- 写出后的收尾（都是尽力而为，失败只记日志，不影响拷贝结论）----
+                //
+                // ① 清掉 macOS 隔离属性 com.apple.quarantine。
+                //    不清的话，目标文件在 Mac 上会被 Gatekeeper 当成「下载来的不可信文件」，
+                //    直接双击可能提示「已损坏」；对素材盘来说这是纯干扰。
+                //    它属于 **xattr（元数据）**，删掉不影响 Data Fork 内容，也就不会影响校验值。
+                match crate::posix::remove_quarantine(&dst) {
+                    Ok(true) => events::emit_log(
+                        app,
+                        "info",
+                        format!("已清除隔离属性 {}：{}", crate::posix::QUARANTINE_XATTR, path_to_string(&dst)),
+                    ),
+                    Ok(false) => {} // 本来就没有 —— 正常情况，不刷日志
+                    Err(e) => events::emit_log(
+                        app,
+                        "warn",
+                        format!("清除隔离属性失败（不影响拷贝结果）：{} —— {e}", path_to_string(&dst)),
+                    ),
+                }
+
+                // ② 可选：复制源的元数据（权限 / 时间戳 / xattr）。
+                //    默认关闭。⚠️ 资源分支永不复制（见 posix::copy_metadata 的说明）。
+                if opts.copy_metadata {
+                    for w in crate::posix::copy_metadata(&src, &dst) {
+                        if let Some(n) = w.strip_prefix("__COPIED_XATTRS__") {
+                            events::emit_log(app, "info", format!("已复制 {n} 个扩展属性（xattr）"));
+                        } else {
+                            events::emit_log(app, "warn", format!("元数据：{w}"));
+                        }
+                    }
+                }
+
                 match action {
                     PlannedAction::Resume => out.resumed += 1,
                     PlannedAction::Overwrite => out.overwritten += 1,
@@ -1207,11 +1239,15 @@ fn warn_if_non_utf8(app: &AppHandle, src: &Path, dst: &Path) {
 /// 用户选了「覆盖」时的最终动作：
 /// - 目标更小（半截文件）→ 仍是断点续传，把剩下的补齐，避免白读一遍已有数据
 /// - 其余情况一律完整覆盖重写
-fn apply_overwrite(suggested: PlannedAction) -> PlannedAction {
-    match suggested {
-        PlannedAction::Resume => PlannedAction::Resume,
-        _ => PlannedAction::Overwrite,
-    }
+/// 用户在冲突弹窗点了「覆盖此文件 / 全部覆盖」时，到底该做什么。
+///
+/// ⚠️ 这里**必须**返回 `Overwrite`（从头重写），不能返回 `Resume`。
+/// 早期版本写的是「建议是续传就保持续传」，于是按钮写着「覆盖此文件」，
+/// 实际执行的是**追加**：只要目标里那段内容与源不一致，就会拼出一个
+/// **长度恰好等于源、内容却是错的**文件 —— stat 大小一样、SHA-256 不一致。
+/// 这正是用户报的那类故障，所以语义已收紧为「说覆盖就是覆盖」。
+fn apply_overwrite(_suggested: PlannedAction) -> PlannedAction {
+    PlannedAction::Overwrite
 }
 
 /// 取得路径所在卷的剩余空间（字节）。失败返回 0。

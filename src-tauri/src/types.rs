@@ -126,6 +126,17 @@ pub struct JobOptions {
     /// 跳过校验阶段：只拷贝，不做内容哈希校验
     #[serde(default)]
     pub skip_verify: bool,
+    /// 复制源文件的**元数据**（权限位 / 时间戳 / xattr）到目标。**默认关闭**。
+    ///
+    /// ⚠️ 资源分支（resource fork）**永不复制** —— 那需要打开
+    /// `..namedfork/rsrc`，属于本程序明令禁止的路径（见 `posix.rs` 模块注释）。
+    #[serde(default)]
+    pub copy_metadata: bool,
+    /// 校验失败时做**分片哈希定位**：按块单独算摘要，指出首个不一致的分片。
+    ///
+    /// 只在不一致的文件上触发，但会额外把该文件读一遍（排障用，默认关闭）。
+    #[serde(default)]
+    pub debug_chunk_hash: bool,
     /// 内容哈希算法：默认 SHA-256，可切 xxHash64 提速。
     /// 同一次任务里预扫描查重 / 续传前缀 / 最终校验都用这一种。
     #[serde(default)]
@@ -141,6 +152,8 @@ impl Default for JobOptions {
             verify_after_copy: true,
             skip_copy: false,
             skip_verify: false,
+            copy_metadata: false,
+            debug_chunk_hash: false,
             hash_algo: HashAlgo::default(),
         }
     }
@@ -217,6 +230,47 @@ pub struct JobEnd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 前端 `collectOptions()` 实际发出的完整载荷必须能被后端解析。
+    ///
+    /// 这条是**契约测试**：前端一旦加字段、后端没跟上（或名字拼错），
+    /// 这里会直接红 —— 比在浏览器里点一遍可靠。
+    /// 浏览器端探针在本机已不可用（Chrome headless 无法启动），所以契约钉在 Rust 侧。
+    #[test]
+    fn frontend_options_payload_round_trips() {
+        // 与 src/main.js 的 collectOptions() 逐字段对应
+        let payload = r#"{
+            "askOnConflict": false,
+            "quickScan": true,
+            "resumePrefixCheck": true,
+            "verifyAfterCopy": true,
+            "skipCopy": false,
+            "skipVerify": false,
+            "copyMetadata": false,
+            "debugChunkHash": false,
+            "hashAlgo": "sha256"
+        }"#;
+        let o: JobOptions = serde_json::from_str(payload).expect("前端载荷必须能解析");
+        assert!(!o.ask_on_conflict);
+        assert!(o.quick_scan);
+        assert!(o.resume_prefix_check, "续传前校验必须能带过来（默认开）");
+        assert!(o.verify_after_copy);
+        assert!(!o.skip_copy);
+        assert!(!o.skip_verify);
+        assert!(!o.copy_metadata, "复制元数据默认必须关");
+        assert!(!o.debug_chunk_hash, "分片定位默认必须关");
+        assert_eq!(o.hash_algo, HashAlgo::Sha256);
+    }
+
+    /// 缺新字段的老任务文件仍然要能加载，且新选项取「安全默认值」
+    #[test]
+    fn legacy_task_json_gets_safe_defaults_for_new_options() {
+        let legacy = r#"{"askOnConflict":false,"quickScan":false,"resumePrefixCheck":true,"verifyAfterCopy":true}"#;
+        let o: JobOptions = serde_json::from_str(legacy).expect("老任务文件应能加载");
+        assert!(!o.copy_metadata, "老文件没有该字段 → 必须默认不复制元数据");
+        assert!(!o.debug_chunk_hash, "老文件没有该字段 → 必须默认关闭分片定位");
+        assert_eq!(o.hash_algo, HashAlgo::Sha256);
+    }
 
     /// 任务 JSON 里的写法：`hashAlgo` 存 slug；缺这个字段的老任务文件必须能照常加载
     #[test]

@@ -100,7 +100,7 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     },
     invoke(cmd, args) {
       args = args || {};
-      if (cmd === "app_version") return Promise.resolve("1.1.0");
+      if (cmd === "app_version") return Promise.resolve("1.2.0");
       if (cmd === "start_compare") { window.__cmpStartArgs = args; return Promise.resolve(null); }
       if (cmd === "cancel_compare") { window.__cmpCancelCalled = true; return Promise.resolve(null); }
       if (cmd === "list_disks") return Promise.resolve(DISKS);
@@ -644,6 +644,12 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     setTimeout(async () => {
       const out = {};
       out.btnDry已删除 = !el("btnDry");
+
+      // 元数据 / 排障两个新选项：存在 + 默认关闭（默认关是安全要求）
+      out.有复制元数据选项 = !!el("optCopyMeta");
+      out.有分片定位选项 = !!el("optDebugChunk");
+      out.复制元数据默认关 = !!el("optCopyMeta") && el("optCopyMeta").checked === false;
+      out.分片定位默认关 = !!el("optDebugChunk") && el("optDebugChunk").checked === false;
 
       // ⓪ 主题色：#FB565A（rgb(251, 86, 90)）
       const rootCS = getComputedStyle(document.documentElement);

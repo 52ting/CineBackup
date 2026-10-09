@@ -357,6 +357,8 @@ fn t10_plan_classifies_all_four_cases() {
         verify_after_copy: true,
         skip_copy: false,
         skip_verify: false,
+        copy_metadata: false,
+        debug_chunk_hash: false,
         hash_algo: HashAlgo::Sha256,
     };
 
@@ -581,6 +583,8 @@ fn t13_second_round_rereads_everything_already_copied() {
         verify_after_copy: true,
         skip_copy: false,
         skip_verify: false,
+        copy_metadata: false,
+        debug_chunk_hash: false,
         hash_algo: ALGO,
     };
     let old_src = old_dir.to_string_lossy().into_owned();
