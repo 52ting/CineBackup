@@ -124,6 +124,9 @@ pub fn spawn_compare(
 
 fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, String> {
     st.clear_cancel();
+    // 上一轮任务可能在「校验阶段」被中断，残留 in_verify / verify_skip；
+    // 不清掉的话，这一轮的第一个文件会被上一次的点击误跳过。
+    st.set_in_verify(false);
     let started = Instant::now();
     let target = Path::new(&req.target);
 
@@ -357,17 +360,32 @@ fn run_job(app: &AppHandle, st: &AppState, req: JobRequest) -> Result<JobEnd, St
         if idx.is_empty() {
             events::emit_log(app, "info", "没有需要校验的文件。");
         } else {
+            // 打开「跳过当前文件」的受理窗口：只有在这里面点按钮才有效
+            // （命令层会检查 in_verify，拷贝阶段点了会被拒绝而不是记下来）。
+            st.set_in_verify(true);
             let vs = verify::run_verify(
                 app,
                 &plan.items,
                 &idx,
                 req.options.hash_algo,
                 &st.cancel,
+                &st.verify_skip,
                 total,
                 req.options.debug_chunk_hash,
             );
+            st.set_in_verify(false); // 顺手清掉残留的跳过请求
             end.pass += vs.pass;
             end.failed += vs.failed + vs.errors;
+            if vs.skipped > 0 {
+                events::emit_log(
+                    app,
+                    "warn",
+                    format!(
+                        "有 {} 个文件被手动跳过校验（已登记到结果表「跳过」栏，不计入失败）。",
+                        vs.skipped
+                    ),
+                );
+            }
         }
     } else {
         events::emit_log(app, "info", "已按选项跳过校验阶段。");

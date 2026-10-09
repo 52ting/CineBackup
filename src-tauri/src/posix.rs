@@ -46,6 +46,27 @@ pub fn cancelled_err() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "任务已取消")
 }
 
+/// 「跳过当前文件」哨兵错误里的标记串。
+///
+/// 校验循环要区分三种「读不下去」：整体取消、真读取错误、以及**用户按了「跳过此文件」**。
+/// 前两者 `ErrorKind` 就能表达，第三种在 `ErrorKind` 里没有对应值，
+/// 所以用一个绝不会与真实 IO 错误文案撞车的标记串。
+/// **判定入口只允许 [`is_skip_err`]** —— 别在别处直接比字符串。
+const SKIP_MARKER: &str = "__CB_SKIP_CURRENT_FILE__";
+
+/// 构造「跳过当前文件」哨兵错误（仅供读取循环内部与校验层使用）
+pub fn skip_err() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, SKIP_MARKER)
+}
+
+/// 判断某个错误是不是「跳过当前文件」哨兵。
+///
+/// ⚠️ 必须先于「取消」判定：两者 `ErrorKind` 都是 `Interrupted`，
+/// 只能靠这个函数区分，否则用户点「跳过」会被报成「任务已取消」。
+pub fn is_skip_err(e: &io::Error) -> bool {
+    e.to_string().contains(SKIP_MARKER)
+}
+
 // ================================================================ 打开方式
 
 /// 写入模式
@@ -530,6 +551,26 @@ pub fn hash_data_fork_range(
     cancel: &AtomicBool,
     on_bytes: &mut dyn FnMut(u64),
 ) -> io::Result<(Digest, u64)> {
+    // 不需要「跳过单个文件」能力的调用方：给一个永远不会被置位的本地标志。
+    let never = AtomicBool::new(false);
+    hash_data_fork_range_skip(path, start, len, algo, cancel, &never, on_bytes)
+}
+
+/// 同 [`hash_data_fork_range`]，但额外支持**中途跳过当前文件**。
+///
+/// `skip` 被置位时立即返回 [`skip_err`]（可由 [`is_skip_err`] 识别），
+/// 调用方据此把该文件标成「跳过」而不是「失败」。校验阶段用它实现
+/// 「跳过此文件」按钮 —— 大文件（尤其网络盘上几百 GB 的）读一半就够了，
+/// 用户不该为了跳过它而等完整读一遍、更不该被迫取消整个任务。
+pub fn hash_data_fork_range_skip(
+    path: &Path,
+    start: u64,
+    len: Option<u64>,
+    algo: HashAlgo,
+    cancel: &AtomicBool,
+    skip: &AtomicBool,
+    on_bytes: &mut dyn FnMut(u64),
+) -> io::Result<(Digest, u64)> {
     let mut f = DataFile::open_read(path)?;
     if start > 0 {
         seek_from_start(&mut f, start)?;
@@ -540,6 +581,12 @@ pub fn hash_data_fork_range(
     let mut total: u64 = 0;
 
     loop {
+        // 顺序有讲究：**先看「跳过」，再看「取消」**。
+        // 二者都是 Interrupted，但语义完全不同；用户点「跳过此文件」时
+        // 不该被当成「取消整个任务」。每读一块就查一次，所以点下去最多再读一个块。
+        if skip.load(Ordering::Relaxed) {
+            return Err(skip_err());
+        }
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled_err());
         }
@@ -1227,5 +1274,78 @@ mod tests {
         assert!(!r, "普通文件本来就没有 com.apple.quarantine");
         // 再调一次仍然不报错
         assert!(!remove_quarantine(&f).unwrap());
+    }
+
+    // ------------------------------------------------ 跳过当前文件（校验阶段用）
+
+    /// 「跳过当前文件」：读循环必须**立刻**停手，并返回可识别的哨兵错误。
+    ///
+    /// 这条是「跳过此文件」按钮的地基 —— 如果只是「读完再丢弃结果」，
+    /// 用户点跳过之后仍然要等一个几百 GB 的文件读完整遍，功能等于没有。
+    #[test]
+    fn t13_skip_stops_read_early_with_sentinel() {
+        use std::sync::Arc;
+
+        let d = tmpdir("t13");
+        let f = d.join("big.bin");
+        // 40 MiB，远大于 4 MiB 的块，确保「只读了第一块就停」
+        let big = data(40 * 1024 * 1024, 71);
+        fs::write(&f, &big).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let skip = Arc::new(AtomicBool::new(false));
+        let s2 = skip.clone();
+        let mut read: u64 = 0;
+        // 读完第一块就把 skip 置上 —— 模拟用户在校验途中点「跳过此文件」
+        let mut on = |n: u64| {
+            read += n;
+            s2.store(true, Ordering::SeqCst);
+        };
+        let r = hash_data_fork_range_skip(&f, 0, None, HashAlgo::Sha256, &cancel, &skip, &mut on);
+        let e = r.expect_err("置位 skip 后必须返回错误，而不是算出哈希");
+        assert!(
+            is_skip_err(&e),
+            "必须是可识别的「跳过」哨兵，而不是普通 IO 错：{e}"
+        );
+        assert!(
+            read <= CHUNK_SIZE as u64,
+            "置位后最多再读一块（{} B），实际读了 {} B —— 说明没有及时停手",
+            CHUNK_SIZE,
+            read
+        );
+        assert!(read < big.len() as u64, "绝不能把 40 MiB 整个读完");
+    }
+
+    /// 调用前 skip 就已经置位 → 一个字节都不该读
+    #[test]
+    fn t14_skip_before_start_reads_nothing() {
+        let d = tmpdir("t14");
+        let f = d.join("x.bin");
+        fs::write(&f, data(1024 * 1024, 9)).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let skip = AtomicBool::new(true); // 预先置位
+        let mut read: u64 = 0;
+        let mut on = |n: u64| read += n;
+        let e = hash_data_fork_range_skip(&f, 0, None, HashAlgo::Sha256, &cancel, &skip, &mut on)
+            .expect_err("预先置位必须直接返回跳过");
+        assert!(is_skip_err(&e));
+        assert_eq!(read, 0, "预先置位时不该读任何字节");
+    }
+
+    /// ⚠️ 「跳过」与「取消」必须能被区分开。
+    ///
+    /// 两者的 `ErrorKind` 都是 `Interrupted`，只看 kind 会分不清；
+    /// 判反了的后果是：用户点「跳过此文件」，界面报「任务已取消」。
+    #[test]
+    fn t15_skip_error_is_distinguishable_from_cancel() {
+        let skip = skip_err();
+        let cancel = cancelled_err();
+        assert!(is_skip_err(&skip));
+        assert!(
+            !is_skip_err(&cancel),
+            "取消不能被当成跳过（否则点取消会被记成「跳过」而不是「取消」）"
+        );
+        assert_ne!(skip.to_string(), cancel.to_string());
     }
 }

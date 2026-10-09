@@ -19,6 +19,14 @@ pub struct AppState {
     /// 对比校验的取消标志 —— 独立于 `cancel`，
     /// 这样「对比进行中取消备份」/「备份中取消对比」不会互相误伤。
     pub compare_cancel: AtomicBool,
+    /// 「跳过当前正在校验的文件」请求标志（校验阶段专用）。
+    ///
+    /// 与 `cancel` 是**两回事**：`cancel` 会中断整个任务，这个只放弃**当前这一个文件**
+    /// 的校验、直接进入下一个。所以必须独立，不能让两者共用同一个标志。
+    pub verify_skip: AtomicBool,
+    /// 是否正处于「校验阶段」。`skip_current` 命令靠它判断能不能接受跳过请求 ——
+    /// 拷贝阶段点「跳过」是没有意义的（那时根本没在校验）。
+    pub in_verify: AtomicBool,
 }
 
 impl AppState {
@@ -29,6 +37,8 @@ impl AppState {
             reply: Mutex::new(None),
             comparing: AtomicBool::new(false),
             compare_cancel: AtomicBool::new(false),
+            verify_skip: AtomicBool::new(false),
+            in_verify: AtomicBool::new(false),
         }
     }
 
@@ -80,6 +90,34 @@ impl AppState {
 
     pub fn clear_compare_cancel(&self) {
         self.compare_cancel.store(false, Ordering::SeqCst);
+    }
+
+    /// 进入 / 退出校验阶段。退出时顺手清掉可能残留的跳过请求，
+    /// 否则下一轮任务的**第一个**文件会被上一次的点击误跳过。
+    pub fn set_in_verify(&self, on: bool) {
+        self.in_verify.store(on, Ordering::SeqCst);
+        if !on {
+            self.verify_skip.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// 请求跳过「当前正在校验的文件」。不在校验阶段时返回 false（不做任何事）。
+    pub fn request_skip_current(&self) -> bool {
+        if !self.in_verify.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.verify_skip.store(true, Ordering::SeqCst);
+        true
+    }
+
+    /// 校验循环消费（取走）跳过请求。取走后标志复位，**只影响当前文件**。
+    pub fn take_skip_current(&self) -> bool {
+        self.verify_skip.swap(false, Ordering::SeqCst)
+    }
+
+    /// 清掉跳过请求（判定为跳过 / 任务收尾时调用）
+    pub fn clear_skip_current(&self) {
+        self.verify_skip.store(false, Ordering::SeqCst);
     }
 
     /// 设置当前模态框的回信通道

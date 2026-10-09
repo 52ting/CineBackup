@@ -175,6 +175,20 @@ pub fn hash_file(
     hash_range(path, 0, None, algo, cancel, &mut on_bytes)
 }
 
+/// 同 [`hash_file`]，但可**中途响应「跳过当前文件」**（校验阶段专用）。
+///
+/// `skip` 一旦被置位，读取循环立即返回 [`crate::posix::is_skip_err`] 可识别的哨兵错误；
+/// 调用方据此把该文件标为「跳过」而非「失败」。
+pub fn hash_file_skip(
+    path: &Path,
+    algo: HashAlgo,
+    cancel: &AtomicBool,
+    skip: &AtomicBool,
+    mut on_bytes: impl FnMut(u64),
+) -> io::Result<(Digest, u64)> {
+    crate::posix::hash_data_fork_range_skip(path, 0, None, algo, cancel, skip, &mut on_bytes)
+}
+
 /// 只计算文件**前 `len` 字节**的哈希（用于断点续传前的「已写入部分」校验）
 pub fn hash_prefix(
     path: &Path,

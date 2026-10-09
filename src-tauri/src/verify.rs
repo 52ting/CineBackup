@@ -17,6 +17,7 @@
 //! 小文件几百毫秒能连着读完好几个，它们会整段被吞掉 —— 表现就是「结果表在涨、
 //! 进度条不动」。两条约定各有回归测试，见 `tests/verify_progress.rs`。
 
+use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -35,7 +36,30 @@ pub struct VerifyStats {
     pub pass: u64,
     pub failed: u64,
     pub errors: u64,
+    /// 用户手动「跳过此文件」的次数。**不计入 failed / errors** ——
+    /// 跳过是用户主动选择，不算校验失败。
+    pub skipped: u64,
     pub bytes: u64,
+}
+
+/// 构造一条「用户手动跳过校验」的结果行。
+///
+/// 状态用 `skip`（前端映射到「跳过」栏与 ⏭ 图标），说明里写明是**人为**跳过、
+/// 以及跳过的位置，便于事后区分「没校验」和「校验通过」。
+fn skip_result(src: &std::path::Path, dst: &std::path::Path, size: u64, read: u64) -> FileResult {
+    FileResult {
+        path: path_to_string(src),
+        target: path_to_string(dst),
+        size,
+        status: "skip".into(),
+        src_hash: String::new(),
+        dst_hash: String::new(),
+        message: if read == 0 {
+            "用户手动跳过校验（未读取就跳过）".to_string()
+        } else {
+            format!("用户手动跳过校验（已读 {} 后跳过）", human_bytes(read))
+        },
+    }
 }
 
 /// 分片调试时用的分片大小。
@@ -68,6 +92,7 @@ pub fn run_verify(
     idx: &[usize],
     algo: HashAlgo,
     cancel: &AtomicBool,
+    skip: &AtomicBool,
     total_bytes: u64,
     debug_chunk: bool,
 ) -> VerifyStats {
@@ -79,6 +104,7 @@ pub fn run_verify(
         idx,
         algo,
         cancel,
+        skip,
         total_bytes,
         PROGRESS_MS,
         debug_chunk,
@@ -102,17 +128,26 @@ pub fn run_verify_with(
     progress_ms: u64,
     sinks: VerifySinks<'_>,
 ) -> VerifyStats {
-    // 保持旧签名不变（`tests/verify_progress.rs` 依赖它），分片调试默认关
-    run_verify_with_opts(items, idx, algo, cancel, total_bytes, progress_ms, false, sinks)
+    // 保持旧签名不变（`tests/verify_progress.rs` 依赖它）：分片调试默认关，
+    // 并给一个永远不会被置位的「跳过」标志（这些测试不涉及手动跳过）。
+    let never = AtomicBool::new(false);
+    run_verify_with_opts(
+        items, idx, algo, cancel, &never, total_bytes, progress_ms, false, sinks,
+    )
 }
 
-/// 校验主体（带分片调试开关）。`debug_chunk = true` 时，对不一致的文件
-/// 额外按 [`DEBUG_CHUNK_SIZE`] 分片重算两边摘要，指出**首个不一致的分片与偏移**。
+/// 校验主体（带分片调试 + 单文件跳过）。
+///
+/// - `debug_chunk = true`：对不一致的文件额外按 [`DEBUG_CHUNK_SIZE`] 分片重算两边摘要，
+///   指出**首个不一致的分片与偏移**。
+/// - `skip`：用户点「跳过此文件」时被置位。**文件开头与每个读取块**都会检查它，
+///   命中即放弃该文件（记 `status = "skip"`，**不计入失败**）并继续下一个。
 pub fn run_verify_with_opts(
     items: &[PlanItem],
     idx: &[usize],
     algo: HashAlgo,
     cancel: &AtomicBool,
+    skip: &AtomicBool,
     total_bytes: u64,
     progress_ms: u64,
     debug_chunk: bool,
@@ -156,6 +191,28 @@ pub fn run_verify_with_opts(
         let file_total = it.size.saturating_mul(2);
         let cur = path_to_string(src);
 
+        // ── 用户在**这个文件开始读之前**就点了「跳过此文件」──
+        // 直接记一条跳过就走，连 open 都不做（可能是几百 GB，能省则省）。
+        if skip.swap(false, Ordering::SeqCst) {
+            stats.skipped += 1;
+            let r = skip_result(src, dst, it.size, 0);
+            log("warn", format!("{} {}", r.message, r.path));
+            result_sink(&r);
+            throttle.force();
+            progress_sink(&make_report(
+                &mut meter,
+                files_total,
+                (i + 1) as u64,
+                total_bytes,
+                done_bytes,
+                &cur,
+                0,          // 跳过的文件没读，file_done 记 0
+                file_total, // 但「本文件总量」照报，界面不会显示成 0/0
+                started,
+            ));
+            continue;
+        }
+
         let mut file_read: u64 = 0;
         // 边读边发。注意 files_done 传的是 i：正在读的这一个还没读完，
         // 报 i+1 会让人误以为它已经完成了。收尾时再强制补一条 i+1。
@@ -178,8 +235,15 @@ pub fn run_verify_with_opts(
                     ));
                 }
             };
-            let a = hash::hash_file(src, algo, cancel, &mut on);
-            let b = hash::hash_file(dst, algo, cancel, &mut on);
+            let a = hash::hash_file_skip(src, algo, cancel, skip, &mut on);
+            // 源这一步已经失败（取消 / 跳过 / 真 IO 错）→ 不必再读目标，
+            // 否则白读一整份文件。占位错误不会被展示：下面 match 的
+            // 第一个分支 (Err(e), _) 会优先命中 `a` 的真实错误。
+            let b = if a.is_err() {
+                Err(io::Error::new(io::ErrorKind::Other, "src-not-read"))
+            } else {
+                hash::hash_file_skip(dst, algo, cancel, skip, &mut on)
+            };
             (a, b)
         };
 
@@ -282,27 +346,41 @@ pub fn run_verify_with_opts(
                 }
             }
             (Err(e), _) => {
-                stats.errors += 1;
-                FileResult {
-                    path: path_to_string(src),
-                    target: path_to_string(dst),
-                    size: it.size,
-                    status: "error".into(),
-                    src_hash: String::new(),
-                    dst_hash: String::new(),
-                    message: format!("源文件读取失败：{e}"),
+                // ⚠️ 必须先于「读取失败」判定：跳过哨兵与取消的 ErrorKind 都是 Interrupted，
+                // 判反了用户点「跳过」会看到「源文件读取失败」。
+                if crate::posix::is_skip_err(&e) {
+                    skip.store(false, Ordering::SeqCst); // 消费掉，别影响下一个文件
+                    stats.skipped += 1;
+                    skip_result(src, dst, it.size, file_read)
+                } else {
+                    stats.errors += 1;
+                    FileResult {
+                        path: path_to_string(src),
+                        target: path_to_string(dst),
+                        size: it.size,
+                        status: "error".into(),
+                        src_hash: String::new(),
+                        dst_hash: String::new(),
+                        message: format!("源文件读取失败：{e}"),
+                    }
                 }
             }
             (_, Err(e)) => {
-                stats.errors += 1;
-                FileResult {
-                    path: path_to_string(src),
-                    target: path_to_string(dst),
-                    size: it.size,
-                    status: "error".into(),
-                    src_hash: String::new(),
-                    dst_hash: String::new(),
-                    message: format!("目标文件读取失败：{e}"),
+                if crate::posix::is_skip_err(&e) {
+                    skip.store(false, Ordering::SeqCst);
+                    stats.skipped += 1;
+                    skip_result(src, dst, it.size, file_read)
+                } else {
+                    stats.errors += 1;
+                    FileResult {
+                        path: path_to_string(src),
+                        target: path_to_string(dst),
+                        size: it.size,
+                        status: "error".into(),
+                        src_hash: String::new(),
+                        dst_hash: String::new(),
+                        message: format!("目标文件读取失败：{e}"),
+                    }
                 }
             }
         };
@@ -340,10 +418,17 @@ pub fn run_verify_with_opts(
             "warn"
         },
         format!(
-            "校验结束：通过 {}，失败 {}，读取错误 {}，共读取 {}，耗时 {:.1}s",
+            "校验结束：通过 {}，失败 {}，读取错误 {}{}，共读取 {}，耗时 {:.1}s",
             stats.pass,
             stats.failed,
             stats.errors,
+            // 有手动跳过时必须报出来：否则「通过 + 失败 + 错误」凑不齐文件总数，
+            // 用户会以为漏了文件（其实是被自己跳过的那几个）。
+            if stats.skipped > 0 {
+                format!("，手动跳过 {}", stats.skipped)
+            } else {
+                String::new()
+            },
             human_bytes(stats.bytes),
             started.elapsed().as_secs_f64()
         ),

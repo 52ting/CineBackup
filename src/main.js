@@ -8,7 +8,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   EV, probePath, fsType, freeSpace, listDisks, startJob, replyDecision,
   cancelJob, saveTaskFile, loadTaskFile, on, fmtBytes, appVersion,
-  startCompare, cancelCompare,
+  startCompare, cancelCompare, skipCurrentVerify,
 } from "./backend.js";
 import * as ui from "./ui.js";
 import { initDragDrop } from "./dnd.js";
@@ -1297,6 +1297,24 @@ $("btnStart").addEventListener("click", () => {
 });
 $("btnClearTask").addEventListener("click", clearTask);
 $("btnCancel").addEventListener("click", cancel);
+
+// 「跳过此文件」：只在校验阶段可见（renderStatus 控制显隐）。
+// 与「取消任务」完全不同 —— 只放弃当前这一个文件的校验，任务继续跑完。
+$("btnSkipFile").addEventListener("click", async () => {
+  try {
+    const accepted = await skipCurrentVerify();
+    if (accepted) {
+      ui.pushLog(
+        "warn",
+        "已请求跳过当前文件的校验 —— 会立刻停手并记入结果表「跳过」栏（不计入失败），然后继续下一个文件。"
+      );
+    } else {
+      ui.pushLog("info", "当前不在校验阶段，无需跳过。");
+    }
+  } catch (e) {
+    ui.pushLog("error", `跳过当前文件失败：${e}`);
+  }
+});
 $("btnClearResults").addEventListener("click", () => {
   ui.resetResults();
   ui.pushLog("info", "已清空校验结果（源 / 目标 / 日志不受影响）。");

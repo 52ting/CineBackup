@@ -34,6 +34,7 @@ export const CMD = {
   SAVE_TASK: "save_task_file",
   LOAD_TASK: "load_task_file",
   IS_BUSY: "is_busy",
+  SKIP_CURRENT_VERIFY: "skip_current_verify",
   START_COMPARE: "start_compare",
   CANCEL_COMPARE: "cancel_compare",
 };
@@ -94,6 +95,20 @@ export function loadTaskFile(path) {
 }
 export function isBusy() {
   return invoke(CMD.IS_BUSY);
+}
+
+/**
+ * 跳过「当前正在校验的文件」，继续校验下一个。
+ *
+ * 与「取消任务」不是一回事：取消会中断整个任务，这个只放弃当前这一个文件
+ * （大文件、尤其网络盘上几百 GB 的，读一半就够了；不必等它读完，也不必取消整轮）。
+ * 被跳过的文件在结果表里记「跳过」，**不计入失败**。
+ *
+ * @returns {Promise<boolean>} false = 当前不在校验阶段，请求未被受理
+ *   （后端靠 `in_verify` 判定：拷贝阶段点「跳过」没有意义，不该被悄悄记下来）
+ */
+export function skipCurrentVerify() {
+  return invoke(CMD.SKIP_CURRENT_VERIFY);
 }
 
 /**

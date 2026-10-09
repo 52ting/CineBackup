@@ -100,8 +100,13 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
     },
     invoke(cmd, args) {
       args = args || {};
-      if (cmd === "app_version") return Promise.resolve("1.2.0");
+      if (cmd === "app_version") return Promise.resolve("1.3.0");
       if (cmd === "start_compare") { window.__cmpStartArgs = args; return Promise.resolve(null); }
+      // 「跳过此文件」：记录调用次数，并按探针场景要求返回 true/false
+      if (cmd === "skip_current_verify") {
+        window.__skipCalls = (window.__skipCalls || 0) + 1;
+        return Promise.resolve(window.__skipAccepted !== false);
+      }
       if (cmd === "cancel_compare") { window.__cmpCancelCalled = true; return Promise.resolve(null); }
       if (cmd === "list_disks") return Promise.resolve(DISKS);
       if (cmd === "fs_type") return Promise.resolve("NTFS");
@@ -631,6 +636,64 @@ MOCK_JS = """// ==== 预览用假后端（只在 .preview/ 里存在，不进产
   }
 
 
+  // ?skiptest=1 → 回归场景：「跳过此文件」按钮
+  // 关键约定：① 只在**校验阶段**可见；② 点击会调 skip_current_verify；
+  //          ③ 后端拒绝（返回 false）时要有明确提示而不是静默。
+  if (qs.has("skiptest")) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const el = (id) => document.getElementById(id);
+    const hidden = (id) => { const e = el(id); return !e || e.classList.contains("hidden"); };
+
+    setTimeout(async () => {
+      const out = {};
+      out.有跳过按钮 = !!el("btnSkipFile");
+
+      // ① 空闲时不可见
+      window.__cbEmit("cb:status", { status: "idle", message: "" });
+      await sleep(120);
+      out.空闲时隐藏 = hidden("btnSkipFile");
+
+      // ② 拷贝阶段也不可见（那时跳过没有意义）
+      window.__cbEmit("cb:status", { status: "copying", message: "" });
+      await sleep(120);
+      out.拷贝阶段隐藏 = hidden("btnSkipFile");
+
+      // ③ 校验阶段才出现
+      window.__cbEmit("cb:status", { status: "verifying", message: "" });
+      await sleep(120);
+      out.校验阶段可见 = !hidden("btnSkipFile");
+
+      // ④ 点击 → 调用后端命令（mock 返回 true）
+      window.__skipAccepted = true;
+      window.__skipCalls = 0;
+      el("btnSkipFile").click();
+      await sleep(200);
+      out.点击后调用次数 = window.__skipCalls || 0;
+      out.点击后已调用后端 = (window.__skipCalls || 0) === 1;
+
+      // ⑤ 后端拒绝（不在校验阶段）→ 不能静默，要有日志
+      window.__skipAccepted = false;
+      const before = document.querySelectorAll("#logBox .log-line, #logBox > *").length;
+      el("btnSkipFile").click();
+      await sleep(200);
+      const after = document.querySelectorAll("#logBox .log-line, #logBox > *").length;
+      out.拒绝时也有日志 = after > before;
+
+      // ⑥ 任务结束 → 按钮收起
+      window.__cbEmit("cb:status", { status: "done", message: "" });
+      await sleep(120);
+      out.结束后隐藏 = hidden("btnSkipFile");
+
+      if (qs.has("probe")) {
+        const pre = document.createElement("pre");
+        pre.id = "probeOut";
+        pre.textContent = JSON.stringify(out, null, 2);
+        document.body.appendChild(pre);
+      }
+      document.title = "PROBE_DONE";
+    }, 1400);
+  }
+
   // ?uitest=1 → 回归场景：本轮新加的交互（取消确认 / 清空任务 / 清空结果 /
   // 跳过拷贝校验互斥 / 错误弹窗倒计时）。用真实 DOM 点击 + 事件投递验证。
   if (qs.has("uitest")) {
@@ -1135,6 +1198,11 @@ def main():
         help="跑 ?cmptest=1：对比校验面板 的回归断言（不截图）",
     )
     ap.add_argument(
+        "--skiptest",
+        action="store_true",
+        help="跑 ?skiptest=1：「跳过此文件」按钮 的回归断言（不截图）",
+    )
+    ap.add_argument(
         "--uitest",
         action="store_true",
         help="跑 ?uitest=1：取消确认 / 清空任务 / 清空结果 / 选项互斥 / 错误倒计时 的回归断言（不截图）",
@@ -1147,7 +1215,7 @@ def main():
             args.probe = True
         args.run = args.dnd = args.drop = False
 
-    if args.rowtest or args.uitest or args.cmptest:
+    if args.rowtest or args.uitest or args.cmptest or args.skiptest:
         # 带 --shot 时当截图场景跑（不写 probeOut），否则当断言场景
         if not args.shot:
             args.probe = True
@@ -1156,7 +1224,7 @@ def main():
 
     if args.probe or args.queuetest:
         # 回归场景固定需要：运行中 + 往左栏拖一次（新源）+ 排队探针
-        if not (args.rowtest or args.uitest or args.cmptest):
+        if not (args.rowtest or args.uitest or args.cmptest or args.skiptest):
             args.run = args.dnd = args.drop = True
     if args.filtertest:
         # 筛选/拖高场景只关心底部面板，不需要跑任务
@@ -1212,7 +1280,10 @@ def main():
         parts.append("uitest=1")
     if args.cmptest:
         parts.append("cmptest=1")
-    if args.queuetest or (args.probe and not args.filtertest and not args.rowtest and not args.uitest and not args.cmptest):
+    if args.skiptest:
+        parts.append("skiptest=1")
+    if args.queuetest or (args.probe and not args.filtertest and not args.rowtest
+                          and not args.uitest and not args.cmptest and not args.skiptest):
         parts.append("queuetest=1")
     if args.probe:
         parts.append("probe=1")

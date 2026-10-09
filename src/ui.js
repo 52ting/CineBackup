@@ -202,6 +202,10 @@ export function renderStatus(status) {
   const running = status !== "idle" && status !== "done";
   // 「开始备份」运行中不禁用：点它是「追加一轮」（排队到本轮结束后），由 main.js 接管
   $("btnCancel").classList.toggle("hidden", !running);
+  // 「跳过此文件」只在**校验阶段**显示 —— 拷贝阶段点它没有任何意义
+  // （后端会拒绝：`skip_current_verify` 靠 in_verify 判断）。
+  const skip = $("btnSkipFile");
+  if (skip) skip.classList.toggle("hidden", status !== "verifying");
 }
 
 /**
