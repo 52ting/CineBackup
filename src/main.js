@@ -8,7 +8,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   EV, probePath, fsType, freeSpace, listDisks, startJob, replyDecision,
   cancelJob, saveTaskFile, loadTaskFile, on, fmtBytes, appVersion,
-  startCompare, cancelCompare, skipCurrentVerify,
+  startCompare, cancelCompare, skipCurrentVerify, closeApp,
 } from "./backend.js";
 import * as ui from "./ui.js";
 import { initDragDrop } from "./dnd.js";
@@ -1078,6 +1078,35 @@ function subscribe() {
     state.comparing = false;
     ui.renderCompareResult(p);
     ui.pushLog(p.ok ? "ok" : "warn", `对比校验完成：${p.message}`);
+  });
+
+  // 关闭确认：后端拦截了窗口关闭（红叉 / Cmd+W）后发来本事件。
+  // 点「退出」才真正退出；取消则什么都不做（窗口已被 prevent_close 保住）。
+  // 任务进行中时文案加重并标红，提醒退出会中断当前备份 / 校验。
+  on(EV.CLOSE_REQUESTED, () => {
+    try {
+      const modal = document.getElementById("confirmModal");
+      if (modal && !modal.classList.contains("hidden")) return; // 已有确认框，不叠加
+      const busy = state.running || state.comparing;
+      ui.showConfirm(
+        {
+          title: busy ? "任务进行中" : "退出确认",
+          body: busy
+            ? "有备份或对比校验正在进行，退出会立即中断任务（已拷贝的部分下次可断点续传）。确定要退出吗？"
+            : "确定要退出魔王拷贝吗？",
+          okText: "退出",
+          danger: busy,
+        },
+        (ok) => {
+          if (ok) closeApp();
+        }
+      );
+    } catch (e) {
+      // 兜底：前端异常导致确认框弹不出来时直接退出，
+      // 避免窗口被 prevent_close 卡死、用户只能强杀进程。
+      console.error("[魔王拷贝] 关闭确认弹窗异常，直接退出：", e);
+      closeApp();
+    }
   });
 
   on(EV.JOB_END, (p) => {

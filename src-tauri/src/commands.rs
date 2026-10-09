@@ -183,3 +183,13 @@ pub fn load_task_file(app: AppHandle, path: String) -> Result<TaskFile, String> 
     );
     Ok(loaded.task)
 }
+
+/// 前端确认退出后调用：立即退出进程。
+///
+/// ⚠️ 不要用 `window.close()` 或窗口 close 来退出——那会再次触发
+/// `CloseRequested`（被 run() 里的拦截逻辑 prevent_close 拦下），造成死循环。
+/// `AppHandle::exit(0)` 直接结束进程，不经过窗口关闭事件。
+#[tauri::command]
+pub fn close_app(app: AppHandle) {
+    app.exit(0);
+}

@@ -33,6 +33,8 @@ pub mod util;
 pub mod verify;
 pub mod walk;
 
+use tauri::Emitter;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -53,7 +55,25 @@ pub fn run() {
             commands::cancel_compare,
             commands::save_task_file,
             commands::load_task_file,
+            commands::close_app,
         ])
-        .run(tauri::generate_context!())
-        .expect("魔王拷贝 启动失败");
+        .build(tauri::generate_context!())
+        .expect("魔王拷贝 启动失败")
+        .run(|app_handle: &tauri::AppHandle<tauri::Wry>, event: tauri::RunEvent| {
+            // 关闭确认：拦截主窗口关闭（点红叉 / Cmd+W / 关闭按钮），
+            // 先 prevent_close 并把请求发给前端，由前端弹确认框；
+            // 用户确认后前端调用 `close_app` 命令真正退出（app.exit 不经过本事件，不会循环）。
+            // 注意：macOS 的 Cmd+Q（应用菜单退出）走 ExitRequested，不在本拦截范围内，直接退出。
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } = event
+            {
+                if label == "main" {
+                    api.prevent_close();
+                    let _ = app_handle.emit("cb:close-requested", ());
+                }
+            }
+        });
 }

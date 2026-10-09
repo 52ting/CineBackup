@@ -19,6 +19,7 @@ export const EV = {
   JOB_END: "cb:job-end",
   COMPARE_PROGRESS: "cb:compare-progress",
   COMPARE_DONE: "cb:compare-done",
+  CLOSE_REQUESTED: "cb:close-requested",
 };
 
 /** Tauri command 名称（与 Rust 端 commands.rs 一一对应） */
@@ -37,6 +38,7 @@ export const CMD = {
   SKIP_CURRENT_VERIFY: "skip_current_verify",
   START_COMPARE: "start_compare",
   CANCEL_COMPARE: "cancel_compare",
+  CLOSE_APP: "close_app",
 };
 
 /**
@@ -125,6 +127,16 @@ export function startCompare(left, right, options = {}) {
 /** 取消正在进行的对比 */
 export function cancelCompare() {
   return invoke(CMD.CANCEL_COMPARE);
+}
+
+/**
+ * 前端确认退出后调用：立即退出进程（后端 `app.exit(0)`）。
+ *
+ * 只能由「关闭确认弹窗」的用户确认动作触发；不要在其他地方误调，
+ * 否则会绕过所有确认直接关掉应用。
+ */
+export function closeApp() {
+  return invoke(CMD.CLOSE_APP);
 }
 
 /** 订阅某个后端事件，返回 unlisten 函数 */
